@@ -122,7 +122,7 @@ bool g_D1BiasBullish = false;
 static int partialClosedFlags[100];
 static int tradesToday = 0;
 MarketStructureState m15Structure = MSS_UNKNOWN;
-MarketRegime g_regime = RANGE_MARKET; 
+MarketRegime g_regime = RANGE_MARKET;
 static datetime lastH4TradeTime = 0;
 double g_swingHigh_M15 = 0.0;
 double g_swingLow_M15  = 0.0;
@@ -138,10 +138,10 @@ int    dyn_TrailingDistancePips;
 double AsiaHigh = 0, AsiaLow = 0;
 double LondonHigh = 0, LondonLow = 0;
 double NYHigh = 0, NYLow = 0;
-datetime AsiaStartTime, LondonStartTime, NYStartTime; 
-double PDH = 0, PDL = 0; 
-double PWH = 0, PWL = 0; 
-double PMH = 0, PML = 0; 
+datetime AsiaStartTime, LondonStartTime, NYStartTime;
+double PDH = 0, PDL = 0;
+double PWH = 0, PWL = 0;
+double PMH = 0, PML = 0;
 
 // Variables para Draw on Liquidity
 bool   g_currentDrawIsBullish = false;
@@ -150,8 +150,8 @@ string g_targetDrawType = "";
 bool   g_hasValidDrawOnLiquidity = false;
 
 // *** NUEVO: Almacenamiento para volúmenes iniciales ***
-ulong  g_positionTickets[]; 
-double g_initialVolumes[];  
+ulong  g_positionTickets[];
+double g_initialVolumes[];
 
 //+------------------------------------------------------------------+
 //| Inputs del EA Agrupados                                          |
@@ -211,39 +211,39 @@ input double VolumeDisplacementMultiplier = 1.3; // Multiplicador: Volumen de De
 input group "--- Parámetros de Detección de Liquidez ---"
 input int    SWING_LOOKBACK_LIQUIDITY = 20;      // Lookback en barras para identificar Swing Points (M15/H1/H4)
 input double EQH_EQL_TolerancePips    = 1.0;     // Tolerancia en pips para considerar Equal Highs/Lows
-input group "--- AddLiquidityZone (Legacy) ---" 
-input int    CONSEC_BARS_LIQUIDITY    = 3;       
-input double MIN_SIZE_PIPS_LIQUIDITY  = 5;       
-input double ATRMultiplierForLiquidity= 1.0;     
+input group "--- AddLiquidityZone (Legacy) ---"
+input int    CONSEC_BARS_LIQUIDITY    = 3;
+input double MIN_SIZE_PIPS_LIQUIDITY  = 5;
+input double ATRMultiplierForLiquidity= 1.0;
 
 input group " --- Parámetros de Caza de Liquidez (Stop Hunt) ---"
-input double StopHuntBufferPips       = 3.0;     
-input int    MIN_PENETRATION_PIPS      = 3;       
-input int    MAX_PENETRATION_PIPS      = 15;      
-input int    REVERSAL_CONFIRMATION_BARS= 2;       
-input double REVERSAL_STRENGTH_PERCENT = 50;      
+input double StopHuntBufferPips       = 3.0;
+input int    MIN_PENETRATION_PIPS      = 3;
+input int    MAX_PENETRATION_PIPS      = 15;
+input int    REVERSAL_CONFIRMATION_BARS= 2;
+input double REVERSAL_STRENGTH_PERCENT = 50;
 
 input group "--- Parámetros Dinámicos Basados en Volatilidad (Inputs Base para Stop Hunt)"
-input double ATRMultiplierForMinPenetration = 0.5; 
-input double ATRMultiplierForMaxPenetration = 2.5; 
-input int    BaseMinReversalBars        = 2;       
-input double VolumeDivergenceMultiplier = 1.5;     
+input double ATRMultiplierForMinPenetration = 0.5;
+input double ATRMultiplierForMaxPenetration = 2.5;
+input int    BaseMinReversalBars        = 2;
+input double VolumeDivergenceMultiplier = 1.5;
 
 input group " --- Parámetros de Fair Value Gap (FVG) ---"
-input int    FVGEntryMode             = ENTRY_MEDIUM; 
+input int    FVGEntryMode             = ENTRY_MEDIUM;
 
 input group "--- R:R Dinámico por Volatilidad ---"
-input bool   UseDynamicRRAdjust         = true;    
-input ENUM_TIMEFRAMES VolatilityTFforRR = PERIOD_D1; 
-input double MinRR_ForKeyLevelTP      = 1.5;     
-input double MaxRR_ForKeyLevelTP      = 5.0;     
-input double Inp_RR_LowVolFactor      = 0.8;     
-input double Inp_RR_MediumVolFactor   = 1.0;     
-input double Inp_RR_HighVolFactor     = 1.2;     
-input int    Inp_RR_ATR_Period        = 14;      
-input int    Inp_RR_ATR_AvgPeriod     = 10;      
-input double Inp_RR_LowVolThrMult     = 0.85;    
-input double Inp_RR_HighVolThrMult    = 1.15;    
+input bool   UseDynamicRRAdjust         = true;
+input ENUM_TIMEFRAMES VolatilityTFforRR = PERIOD_D1;
+input double MinRR_ForKeyLevelTP      = 1.5;
+input double MaxRR_ForKeyLevelTP      = 5.0;
+input double Inp_RR_LowVolFactor      = 0.8;
+input double Inp_RR_MediumVolFactor   = 1.0;
+input double Inp_RR_HighVolFactor     = 1.2;
+input int    Inp_RR_ATR_Period        = 14;
+input int    Inp_RR_ATR_AvgPeriod     = 10;
+input double Inp_RR_LowVolThrMult     = 0.85;
+input double Inp_RR_HighVolThrMult    = 1.15;
 
 //+------------------------------------------------------------------+
 //| Declaraciones Adelantadas de Funciones                           |
@@ -251,15 +251,15 @@ input double Inp_RR_HighVolThrMult    = 1.15;
 // ... (ALL FUNCTION DECLARATIONS AS THEY WERE, PLUS NEW ONES) ...
 bool   GetADXValues(string symbol, ENUM_TIMEFRAMES tf, int period, int barShift, double &adxVal, double &plusDiVal, double &minusDiVal);
 double GetEMAValue(string symbol, ENUM_TIMEFRAMES tf, int periodEMA, int barShift=0);
-double ComputeATR(ENUM_TIMEFRAMES tf, int period, int shift = 0); 
-double ComputeATR_M15(int period); 
-double ComputeATR_H1(int period);  
-double ComputeATR_H4(int period);  
-double ComputeATR_M5(int period);  
-double AdaptiveVolatility(int period); 
+double ComputeATR(ENUM_TIMEFRAMES tf, int period, int shift = 0);
+double ComputeATR_M15(int period);
+double ComputeATR_H1(int period);
+double ComputeATR_H4(int period);
+double ComputeATR_M5(int period);
+double AdaptiveVolatility(int period);
 double GetAdaptiveFactor(int atrPeriod, int maPeriod);
 double CalculateDynamicSLBuffer_M15();
-double ComputeATR_M15_Shift(int period, int shift); 
+double ComputeATR_M15_Shift(int period, int shift);
 double ComputeVolatilityStdDev(int period);
 double ComputeRelativeRange(int period);
 double ComputeROC(int period);
@@ -267,70 +267,70 @@ double CalculateDynamicVolatilityIndex(int atrPeriod, int stddevPeriod, int rocP
 MarketRegime DetermineMarketRegime(double volatilityIndex, double highThreshold, double lowThreshold);
 void   AdjustParametersBasedOnVolatility(MarketRegime regime);
 double CalculateLotSize();
-double CalculateSmartStopBuffer(); 
-bool   IsVolumeTrendingUp(int barIndex, int lookback=3); 
+double CalculateSmartStopBuffer();
+bool   IsVolumeTrendingUp(int barIndex, int lookback=3);
 
-void   DetectLiquidity(); 
+void   DetectLiquidity();
 void   DetectFairValueGaps();
 void   DetectOrderBlocks();
 void   DetectBreakerBlocks();
-void   DetectJudasSwing(); 
+void   DetectJudasSwing();
 bool   DetectStopHunt(double level, bool isBuySideLiquidity, int &huntStrength); // Original signature for now
 bool   IsLiquidityZoneConfirmedByVolume(double price, bool isBuySide, datetime time);
-void   AddLiquidityZone(double price, bool isBuySide, datetime time, double strength, string type, double tolerancePips = 1.0); 
-void   UpdateOldHighsLows(); 
-void   UpdateSessionHighsLows(); 
+void   AddLiquidityZone(double price, bool isBuySide, datetime time, double strength, string type, double tolerancePips = 1.0);
+void   UpdateOldHighsLows();
+void   UpdateSessionHighsLows();
 void FindAndAddSessionLiquidity(datetime startTime, datetime endTime, ENUM_TIMEFRAMES tf, string highType, string lowType, double strength); // Helper for UpdateSessionHighsLows
 
-bool   ComputeH1Bias(); 
-bool   ComputeM30Bias(); 
-void   ComputeH4Bias(); 
-void   ComputeD1Bias(); 
-MarketStructureState DetectMarketStructureM15(int lookbackBars, int pivotStrength); 
-MarketStructureState DetectMarketStructureH1(int lookbackBars, int pivotStrength); 
-MarketStructureState DetectMarketStructure(ENUM_TIMEFRAMES tf, int lookbackBars, int pivotStrength); 
-double CalculateMarketStructureScore(int lookbackBars); 
-double CalculateLiquidityZoneWeight(const LiquidityZone &lz); 
-bool   IsLiquidityZoneStrong(const LiquidityZone &lz); 
-bool   IsH1BiasAligned(bool isBullishEntry); 
-double CalculateH1MarketScore(int lookbackBars); 
-bool   IsMultiTFConfirmation(MarketStructureState m15State, MarketStructureState h1State); 
-double CalculateStructureWeight(MarketStructureState state, double score); 
-bool   IsSignalQualityAcceptable(double m15Score, double h1Score); 
-bool   DetectBOS(ENUM_TIMEFRAMES tf, int barIndex, bool isBullish, int lookback=30); 
-bool   DetectChoCH(ENUM_TIMEFRAMES tf, int barIndex, bool isBullish, int lookback=30); 
-bool   DetectBOS_M15(bool isBullish); 
-bool   DetectChoCH_M15(bool isBullish); 
+bool   ComputeH1Bias();
+bool   ComputeM30Bias();
+void   ComputeH4Bias();
+void   ComputeD1Bias();
+MarketStructureState DetectMarketStructureM15(int lookbackBars, int pivotStrength);
+MarketStructureState DetectMarketStructureH1(int lookbackBars, int pivotStrength);
+MarketStructureState DetectMarketStructure(ENUM_TIMEFRAMES tf, int lookbackBars, int pivotStrength);
+double CalculateMarketStructureScore(int lookbackBars);
+double CalculateLiquidityZoneWeight(const LiquidityZone &lz);
+bool   IsLiquidityZoneStrong(const LiquidityZone &lz);
+bool   IsH1BiasAligned(bool isBullishEntry);
+double CalculateH1MarketScore(int lookbackBars);
+bool   IsMultiTFConfirmation(MarketStructureState m15State, MarketStructureState h1State);
+double CalculateStructureWeight(MarketStructureState state, double score);
+bool   IsSignalQualityAcceptable(double m15Score, double h1Score);
+bool   DetectBOS(ENUM_TIMEFRAMES tf, int barIndex, bool isBullish, int lookback=30);
+bool   DetectChoCH(ENUM_TIMEFRAMES tf, int barIndex, bool isBullish, int lookback=30);
+bool   DetectBOS_M15(bool isBullish);
+bool   DetectChoCH_M15(bool isBullish);
 
-void   CheckTradeEntries(); 
-void   CheckLiquidityHunting(); 
-void   ManageRisk(); 
-bool   OpenTradeSimple(bool isLong, double lot, double entryPrice, double stopLoss, string comment); 
-void   ManagePartialWithFixedTP_Advanced(); 
-void   AdvancedAdaptiveTrailing(ulong ticket, double fixedTakeProfit); 
-void   ApplyStopHuntFractalTrailing(ulong ticket, int fractalDepth, double bufferPips, int searchBarsAfterEntry); 
-void   ManageSLWithStopRunProtection(); 
-bool   IsStopLossNearLiquidityLevel(double proposedSL, double proximityRangePips); 
+void   CheckTradeEntries();
+void   CheckLiquidityHunting();
+void   ManageRisk();
+bool   OpenTradeSimple(bool isLong, double lot, double entryPrice, double stopLoss, string comment);
+void   ManagePartialWithFixedTP_Advanced();
+void   AdvancedAdaptiveTrailing(ulong ticket, double fixedTakeProfit);
+void   ApplyStopHuntFractalTrailing(ulong ticket, int fractalDepth, double bufferPips, int searchBarsAfterEntry);
+void   ManageSLWithStopRunProtection();
+bool   IsStopLossNearLiquidityLevel(double proposedSL, double proximityRangePips);
 bool   IsStopLossDangerouslyNearLiquidity(double proposedSL, bool isLongTrade, double entryPrice, double &adjustedSL_output, double proximityPipsToConsider = 5.0, double adjustmentPips = 3.0);
 void   StoreInitialVolume(ulong ticket, double volume);
 double GetStoredInitialVolume(ulong ticket);
 void   RemoveStoredVolume(ulong ticket);
 
-bool   CheckHTFConfluence(OrderBlock &ob); 
-bool   IsPremiumPosition(OrderBlock &ob); 
-double ComputeATRSlope(int period); 
+bool   CheckHTFConfluence(OrderBlock &ob);
+bool   IsPremiumPosition(OrderBlock &ob);
+double ComputeATRSlope(int period);
 // MODIFIED AssessOBQuality to take displacement score
-double AssessOBQuality(OrderBlock &ob, double displacementQualityScore); 
-bool   IsOBSwept(OrderBlock &ob); 
-void   SortOrderBlocksByQuality(); 
+double AssessOBQuality(OrderBlock &ob, double displacementQualityScore);
+bool   IsOBSwept(OrderBlock &ob);
+void   SortOrderBlocksByQuality();
 
-bool   IsSignalRefined(bool isBullish); 
+bool   IsSignalRefined(bool isBullish);
 
-void UpdateDynamicRiskRewardRatios(); 
-double AssessDisplacementQuality(int barIndexM5, bool isBullishDirection, int lookbackBars = 5, bool requireFVG = true); 
-datetime GetPreviousTradingDayStart(datetime currentDayStart, int tradingDaysToLookback = 1); 
-void GetCurrentDrawOnLiquidity(); 
-bool ValidateAndFinalizeTradeSetup(CurrentTradeSetup &setup); 
+void UpdateDynamicRiskRewardRatios();
+double AssessDisplacementQuality(int barIndexM5, bool isBullishDirection, int lookbackBars = 5, bool requireFVG = true);
+datetime GetPreviousTradingDayStart(datetime currentDayStart, int tradingDaysToLookback = 1);
+void GetCurrentDrawOnLiquidity();
+bool ValidateAndFinalizeTradeSetup(CurrentTradeSetup &setup);
 
 //+------------------------------------------------------------------+
 //| Funciones Auxiliares para Indicadores                            |
@@ -375,7 +375,7 @@ double GetEMAValue(string symbol, ENUM_TIMEFRAMES tf, int periodEMA, int barShif
 
 double ComputeATR(ENUM_TIMEFRAMES tf, int period, int shift = 0)
 {
-   static int atrHandles[10]; 
+   static int atrHandles[10];
    static ENUM_TIMEFRAMES atrTFs[10];
    static int atrPeriods[10];
    int handleIndex = -1;
@@ -393,7 +393,7 @@ double ComputeATR(ENUM_TIMEFRAMES tf, int period, int shift = 0)
    {
       for(int i=0; i<ArraySize(atrHandles); i++)
       {
-         if(atrHandles[i] == 0) 
+         if(atrHandles[i] == 0)
          {
             atrHandles[i] = iATR(Symbol(), tf, period);
             if(atrHandles[i] != INVALID_HANDLE)
@@ -403,7 +403,7 @@ double ComputeATR(ENUM_TIMEFRAMES tf, int period, int shift = 0)
                handleIndex = i;
             } else {
                 Print("Error creando handle ATR(", Symbol(), ", ", EnumToString(tf), ", ", period, "). Code:", GetLastError());
-                return 0.0; 
+                return 0.0;
             }
             break;
          }
@@ -424,21 +424,21 @@ double ComputeATR_H1(int period)  { return ComputeATR(PERIOD_H1, period); }
 double ComputeATR_H4(int period)  { return ComputeATR(PERIOD_H4, period); }
 double ComputeATR_M5(int period)  { return ComputeATR(PERIOD_M5, period); }
 
-double AdaptiveVolatility(int period) 
+double AdaptiveVolatility(int period)
 {
-   if(g_regime == HIGH_VOLATILITY) return 1.2; 
-   if(g_regime == LOW_VOLATILITY) return 0.8;  
-   return 1.0; 
+   if(g_regime == HIGH_VOLATILITY) return 1.2;
+   if(g_regime == LOW_VOLATILITY) return 0.8;
+   return 1.0;
 }
 
 double GetAdaptiveFactor(int atrPeriod, int maPeriod)
 {
-   double currentATR = ComputeATR(PERIOD_M15, atrPeriod, 0); 
-   if(currentATR <= 0) return 1.0; 
+   double currentATR = ComputeATR(PERIOD_M15, atrPeriod, 0);
+   if(currentATR <= 0) return 1.0;
 
    double sumATR = 0.0;
    int barsCalculated = 0;
-   for(int i = 1; i <= maPeriod; i++) 
+   for(int i = 1; i <= maPeriod; i++)
    {
       double pastATR = ComputeATR(PERIOD_M15, atrPeriod, i);
       if(pastATR > 0)
@@ -447,20 +447,20 @@ double GetAdaptiveFactor(int atrPeriod, int maPeriod)
          barsCalculated++;
       }
    }
-   if(barsCalculated == 0) return 1.0; 
+   if(barsCalculated == 0) return 1.0;
    double avgATR = sumATR / barsCalculated;
-   if(avgATR <= 0) return 1.0; 
-   return currentATR / avgATR; 
+   if(avgATR <= 0) return 1.0;
+   return currentATR / avgATR;
 }
 
 double CalculateDynamicSLBuffer_M15()
 {
    double currentATR = ComputeATR_M15(ATRPeriod_M15);
-   if(currentATR <= 0) return _Point * 100; 
+   if(currentATR <= 0) return _Point * 100;
 
    double sumATR = 0.0;
    int barsCalculated = 0;
-   for(int i = 1; i <= ATR_MA_Period; i++) 
+   for(int i = 1; i <= ATR_MA_Period; i++)
    {
       double pastATR = ComputeATR(PERIOD_M15, ATRPeriod_M15, i);
       if(pastATR > 0)
@@ -469,15 +469,15 @@ double CalculateDynamicSLBuffer_M15()
          barsCalculated++;
       }
    }
-   double atrMA = (barsCalculated > 0) ? (sumATR / barsCalculated) : currentATR; 
-   double smoothedATR = (currentATR + atrMA) / 2.0; 
-   double adaptiveMultiplier = GetAdaptiveFactor(ATRPeriod_M15, ATR_MA_Period); 
-   double volatilityRegimeFactor = AdaptiveVolatility(0); 
+   double atrMA = (barsCalculated > 0) ? (sumATR / barsCalculated) : currentATR;
+   double smoothedATR = (currentATR + atrMA) / 2.0;
+   double adaptiveMultiplier = GetAdaptiveFactor(ATRPeriod_M15, ATR_MA_Period);
+   double volatilityRegimeFactor = AdaptiveVolatility(0);
    double dynamicBuffer = smoothedATR * ATRBufferFactor * ATR_Volatility_Multiplier * adaptiveMultiplier * volatilityRegimeFactor;
    double minBufferPips = 5.0;
-   double minBuffer = minBufferPips * _Point * (SymbolInfoInteger(Symbol(), SYMBOL_DIGITS) % 2 == 1 ? 10 : 1); 
+   double minBuffer = minBufferPips * _Point * (SymbolInfoInteger(Symbol(), SYMBOL_DIGITS) % 2 == 1 ? 10 : 1);
     if (minBuffer == 0 && _Point > 0) minBuffer = minBufferPips * _Point;
-    else if (minBuffer == 0) minBuffer = minBufferPips * 0.0001; 
+    else if (minBuffer == 0) minBuffer = minBufferPips * 0.0001;
    return MathMax(minBuffer, dynamicBuffer);
 }
 
@@ -485,13 +485,13 @@ double ComputeATR_M15_Shift(int period, int shift)
 {
     double sumTR = 0.0;
     int calculated_bars = 0;
-    int startBar = shift + 1; 
+    int startBar = shift + 1;
     int endBar = shift + period;
     int totalBars = Bars(Symbol(), PERIOD_M15);
-    if (endBar >= totalBars) return 0.0; 
+    if (endBar >= totalBars) return 0.0;
     for (int i = startBar; i <= endBar; i++)
     {
-        if (i + 1 >= totalBars) continue; 
+        if (i + 1 >= totalBars) continue;
         double high = iHigh(Symbol(), PERIOD_M15, i);
         double low = iLow(Symbol(), PERIOD_M15, i);
         double prevClose = iClose(Symbol(), PERIOD_M15, i + 1);
@@ -507,7 +507,7 @@ double ComputeVolatilityStdDev(int period)
 {
     if (period <= 1) return 0.0;
     double priceData[];
-    if(CopyClose(Symbol(), PERIOD_M5, 0, period, priceData) != period) return 0.0; 
+    if(CopyClose(Symbol(), PERIOD_M5, 0, period, priceData) != period) return 0.0;
     double sum = 0.0;
     for(int i = 0; i < period; i++) sum += priceData[i];
     double mean = sum / period;
@@ -524,7 +524,7 @@ double ComputeRelativeRange(int period)
     if(currentRange <= 0) return 1.0;
     double sumRange = 0.0;
     int calculatedBars = 0;
-    for(int i = 1; i <= period; i++) 
+    for(int i = 1; i <= period; i++)
     {
         double range = iHigh(Symbol(), PERIOD_M5, i) - iLow(Symbol(), PERIOD_M5, i);
         if(range > 0) {
@@ -541,10 +541,10 @@ double ComputeRelativeRange(int period)
 double ComputeROC(int period)
 {
    if(period <= 0) return 0.0;
-   if(iBars(Symbol(), PERIOD_M5) <= period) return 0.0; 
+   if(iBars(Symbol(), PERIOD_M5) <= period) return 0.0;
    double currentPrice = iClose(Symbol(), PERIOD_M5, 0);
    double previousPrice = iClose(Symbol(), PERIOD_M5, period);
-   if(previousPrice == 0) return 0.0; 
+   if(previousPrice == 0) return 0.0;
    return ((currentPrice - previousPrice) / previousPrice) * 100.0;
 }
 
@@ -552,8 +552,8 @@ double CalculateDynamicVolatilityIndex(int atrPeriod, int stddevPeriod, int rocP
 {
     double atr = ComputeATR(PERIOD_M5, atrPeriod);
     double stddev = ComputeVolatilityStdDev(stddevPeriod);
-    double relativeRange = ComputeRelativeRange(atrPeriod); 
-    double roc = ComputeROC(rocPeriod); 
+    double relativeRange = ComputeRelativeRange(atrPeriod);
+    double roc = ComputeROC(rocPeriod);
     double atrWeight = 0.4;
     double stddevWeight = 0.3;
     double relRangeWeight = 0.15;
@@ -574,19 +574,19 @@ void AdjustParametersBasedOnVolatility(MarketRegime regime)
     switch(regime)
     {
         case HIGH_VOLATILITY:
-            dyn_ATRMultiplierForMinPenetration = ATRMultiplierForMinPenetration * 1.3; 
+            dyn_ATRMultiplierForMinPenetration = ATRMultiplierForMinPenetration * 1.3;
             dyn_ATRMultiplierForMaxPenetration = ATRMultiplierForMaxPenetration * 1.3;
-            dyn_BreakEvenPips = BreakEvenPips + 5; 
-            dyn_TrailingDistancePips = TrailingDistancePips + 5; 
+            dyn_BreakEvenPips = BreakEvenPips + 5;
+            dyn_TrailingDistancePips = TrailingDistancePips + 5;
             break;
         case LOW_VOLATILITY:
-            dyn_ATRMultiplierForMinPenetration = ATRMultiplierForMinPenetration * 0.7; 
+            dyn_ATRMultiplierForMinPenetration = ATRMultiplierForMinPenetration * 0.7;
             dyn_ATRMultiplierForMaxPenetration = ATRMultiplierForMaxPenetration * 0.7;
-            dyn_BreakEvenPips = MathMax(5, BreakEvenPips - 5); 
-            dyn_TrailingDistancePips = MathMax(5, TrailingDistancePips - 5); 
+            dyn_BreakEvenPips = MathMax(5, BreakEvenPips - 5);
+            dyn_TrailingDistancePips = MathMax(5, TrailingDistancePips - 5);
             break;
         case RANGE_MARKET:
-        default: 
+        default:
             dyn_ATRMultiplierForMinPenetration = ATRMultiplierForMinPenetration;
             dyn_ATRMultiplierForMaxPenetration = ATRMultiplierForMaxPenetration;
             dyn_BreakEvenPips = BreakEvenPips;
@@ -598,16 +598,16 @@ void AdjustParametersBasedOnVolatility(MarketRegime regime)
 bool IsVolumeTrendingUp(int barIndex, int lookback=3)
 {
    if(barIndex < lookback || lookback <= 0) return false;
-   if(barIndex + 1 >= iBars(Symbol(), PERIOD_M5)) return false; 
+   if(barIndex + 1 >= iBars(Symbol(), PERIOD_M5)) return false;
    for(int k = barIndex; k > barIndex - lookback; k--)
    {
-      if(k+1 >= iBars(Symbol(), PERIOD_M5)) return false; 
+      if(k+1 >= iBars(Symbol(), PERIOD_M5)) return false;
       long vol_k = iTickVolume(Symbol(), PERIOD_M5, k);
       long vol_k1 = iTickVolume(Symbol(), PERIOD_M5, k+1);
       if(vol_k <= vol_k1)
-         return false; 
+         return false;
    }
-   return true; 
+   return true;
 }
 
 //+------------------------------------------------------------------+
@@ -645,37 +645,37 @@ void CheckTradeEntries()
    if((g_H4BiasBullish && m15State == MSS_BULLISH) || (!g_H4BiasBullish && m15State == MSS_BEARISH)) {
        structureCheckOK = true;
    } else if (m15State == MSS_RANGE) {
-       structureCheckOK = true; 
+       structureCheckOK = true;
    }
    if(!structureCheckOK) {
         // Print("CheckTradeEntries: M15 Structure check failed.");
         return;
    }
 
-   OrderBlock targetOB; ZeroMemory(targetOB);    
-   BreakerBlock targetBB; ZeroMemory(targetBB);  
+   OrderBlock targetOB; ZeroMemory(targetOB);
+   BreakerBlock targetBB; ZeroMemory(targetBB);
    bool foundPOI_OB = false;
    bool foundPOI_BB = false;
    // poiType, poiEntryPrice, poiStopLossPrice will be set in g_CurrentSetup
 
    OrderBlock bestVolumeOB; ZeroMemory(bestVolumeOB);
-   double maxVolumeRatio = 0.0; 
+   double maxVolumeRatio = 0.0;
 
    if (ArraySize(orderBlocks) > 0) {
        for(int i=0; i < ArraySize(orderBlocks); i++)
        {
-          if(orderBlocks[i].isBullish == g_H4BiasBullish && orderBlocks[i].isValid && !orderBlocks[i].isSwept && orderBlocks[i].quality >= 6.5) 
+          if(orderBlocks[i].isBullish == g_H4BiasBullish && orderBlocks[i].isValid && !orderBlocks[i].isSwept && orderBlocks[i].quality >= 6.5)
           {
-              if(orderBlocks[i].volumeRatio > maxVolumeRatio) 
+              if(orderBlocks[i].volumeRatio > maxVolumeRatio)
               {
-                  maxVolumeRatio = orderBlocks[i].volumeRatio; 
+                  maxVolumeRatio = orderBlocks[i].volumeRatio;
                   bestVolumeOB = orderBlocks[i];
                   foundPOI_OB = true;
               }
           }
        }
    }
-   
+
    double tempPoiEntryPrice = 0; // Temporary variables for calculation before setting to g_CurrentSetup
    double tempPoiStopLossPrice = 0;
 
@@ -683,32 +683,32 @@ void CheckTradeEntries()
       targetOB = bestVolumeOB;
       // Calculate Entry/SL for this OB
       double atrM5 = ComputeATR(PERIOD_M5, 14);
-      if (atrM5 <= 0 && _Point > 0) atrM5 = _Point * 100; 
+      if (atrM5 <= 0 && _Point > 0) atrM5 = _Point * 100;
       else if (atrM5 <= 0) atrM5 = 0.0001 * 100;
 
       double slBufferPipsValue = (StopLossPips < 1) ? 1.0 : (double)StopLossPips;
       double currentPointCheck = SymbolInfoDouble(Symbol(), SYMBOL_POINT);
       int currentDigitsCheck = (int)SymbolInfoInteger(Symbol(), SYMBOL_DIGITS);
       double pipMonetaryValueCheck = (currentDigitsCheck == 3 || currentDigitsCheck == 5 || currentDigitsCheck == 1) ? currentPointCheck * 10 : currentPointCheck;
-      if (pipMonetaryValueCheck == 0 && currentPointCheck > 0) pipMonetaryValueCheck = currentPointCheck; 
-      else if (pipMonetaryValueCheck == 0) pipMonetaryValueCheck = (currentDigitsCheck <=3 ? 0.01: 0.0001); 
+      if (pipMonetaryValueCheck == 0 && currentPointCheck > 0) pipMonetaryValueCheck = currentPointCheck;
+      else if (pipMonetaryValueCheck == 0) pipMonetaryValueCheck = (currentDigitsCheck <=3 ? 0.01: 0.0001);
       double slBufferPointsCalcCheck = slBufferPipsValue * pipMonetaryValueCheck;
       double slBuffer = MathMax(slBufferPointsCalcCheck, atrM5 * ATRBufferFactor);
 
-      if(g_H4BiasBullish) { 
-         if(OBEntryMode == 0) tempPoiEntryPrice = targetOB.openPrice; 
-         else if (OBEntryMode == 1) tempPoiEntryPrice = (targetOB.openPrice + targetOB.closePrice) / 2.0; 
-         else tempPoiEntryPrice = targetOB.highPrice; 
+      if(g_H4BiasBullish) {
+         if(OBEntryMode == 0) tempPoiEntryPrice = targetOB.openPrice;
+         else if (OBEntryMode == 1) tempPoiEntryPrice = (targetOB.openPrice + targetOB.closePrice) / 2.0;
+         else tempPoiEntryPrice = targetOB.highPrice;
          tempPoiStopLossPrice = targetOB.lowPrice - slBuffer;
-      } else { 
-         if(OBEntryMode == 0) tempPoiEntryPrice = targetOB.openPrice; 
-         else if (OBEntryMode == 1) tempPoiEntryPrice = (targetOB.openPrice + targetOB.closePrice) / 2.0; 
-         else tempPoiEntryPrice = targetOB.lowPrice; 
+      } else {
+         if(OBEntryMode == 0) tempPoiEntryPrice = targetOB.openPrice;
+         else if (OBEntryMode == 1) tempPoiEntryPrice = (targetOB.openPrice + targetOB.closePrice) / 2.0;
+         else tempPoiEntryPrice = targetOB.lowPrice;
          tempPoiStopLossPrice = targetOB.highPrice + slBuffer;
       }
    } else if (ArraySize(breakerBlocks) > 0) { // Check for BB only if no suitable OB
         for(int i=0; i < ArraySize(breakerBlocks); i++) {
-            if(breakerBlocks[i].isBullish == g_H4BiasBullish ) { 
+            if(breakerBlocks[i].isBullish == g_H4BiasBullish ) {
                 targetBB = breakerBlocks[i];
                 foundPOI_BB = true;
                 double atrM5_BB = ComputeATR(PERIOD_M5, 14);
@@ -718,23 +718,23 @@ void CheckTradeEntries()
                 double currentPointCheck_BB = SymbolInfoDouble(Symbol(), SYMBOL_POINT);
                 int currentDigitsCheck_BB = (int)SymbolInfoInteger(Symbol(), SYMBOL_DIGITS);
                 double pipMonetaryValueCheck_BB = (currentDigitsCheck_BB == 3 || currentDigitsCheck_BB == 5 || currentDigitsCheck_BB == 1) ? currentPointCheck_BB * 10 : currentPointCheck_BB;
-                 if (pipMonetaryValueCheck_BB == 0 && currentPointCheck_BB > 0) pipMonetaryValueCheck_BB = currentPointCheck_BB; 
-                 else if (pipMonetaryValueCheck_BB == 0) pipMonetaryValueCheck_BB = (currentDigitsCheck_BB <=3 ? 0.01: 0.0001); 
+                 if (pipMonetaryValueCheck_BB == 0 && currentPointCheck_BB > 0) pipMonetaryValueCheck_BB = currentPointCheck_BB;
+                 else if (pipMonetaryValueCheck_BB == 0) pipMonetaryValueCheck_BB = (currentDigitsCheck_BB <=3 ? 0.01: 0.0001);
                 double slBuffer_BB_calc = slBuffer_BB_Pips * pipMonetaryValueCheck_BB;
                 double slBuffer_BB = MathMax(slBuffer_BB_calc, atrM5_BB * 1.5);
 
                 tempPoiEntryPrice = targetBB.price;
                 if(g_H4BiasBullish) tempPoiStopLossPrice = tempPoiEntryPrice - slBuffer_BB;
                 else tempPoiStopLossPrice = tempPoiEntryPrice + slBuffer_BB;
-                break; 
+                break;
             }
         }
    }
 
-   if(!foundPOI_OB && !foundPOI_BB) return; 
+   if(!foundPOI_OB && !foundPOI_BB) return;
 
    bool useOB = foundPOI_OB;
-   
+
    double currentAsk = SymbolInfoDouble(Symbol(), SYMBOL_ASK);
    double currentBid = SymbolInfoDouble(Symbol(), SYMBOL_BID);
    double point = SymbolInfoDouble(Symbol(), SYMBOL_POINT);
@@ -744,47 +744,47 @@ void CheckTradeEntries()
    else if(entryTolerancePoints <= 0 && entryTolerancePipsValue > 0) entryTolerancePoints = entryTolerancePipsValue * 0.0001;
 
    bool priceIsInZone = false;
-   if(g_H4BiasBullish) 
+   if(g_H4BiasBullish)
    {
        if(currentAsk <= tempPoiEntryPrice + entryTolerancePoints && currentAsk > tempPoiStopLossPrice) {
            priceIsInZone = true;
-           if(currentAsk > tempPoiEntryPrice && useOB && OBEntryMode != 0) tempPoiEntryPrice = currentAsk; 
+           if(currentAsk > tempPoiEntryPrice && useOB && OBEntryMode != 0) tempPoiEntryPrice = currentAsk;
            else if (currentAsk > tempPoiEntryPrice && !useOB) tempPoiEntryPrice = currentAsk; // For BB aggressive entry
        }
    }
-   else 
+   else
    {
        if(currentBid >= tempPoiEntryPrice - entryTolerancePoints && currentBid < tempPoiStopLossPrice) {
             priceIsInZone = true;
-            if(currentBid < tempPoiEntryPrice && useOB && OBEntryMode != 0) tempPoiEntryPrice = currentBid; 
+            if(currentBid < tempPoiEntryPrice && useOB && OBEntryMode != 0) tempPoiEntryPrice = currentBid;
             else if (currentBid < tempPoiEntryPrice && !useOB) tempPoiEntryPrice = currentBid; // For BB aggressive entry
        }
    }
 
-   if(!priceIsInZone) return; 
+   if(!priceIsInZone) return;
 
    double lot = CalculateLotSize();
-   
+
    ZeroMemory(g_CurrentSetup);
-   g_CurrentSetup.isLong = g_H4BiasBullish; 
+   g_CurrentSetup.isLong = g_H4BiasBullish;
    g_CurrentSetup.entryPrice = NormalizeDouble(tempPoiEntryPrice, _Digits);
    g_CurrentSetup.stopLoss = NormalizeDouble(tempPoiStopLossPrice, _Digits);
-   g_CurrentSetup.takeProfit = 0.0; 
+   g_CurrentSetup.takeProfit = 0.0;
 
    if (useOB) {
        g_CurrentSetup.poiType = "OB Vol";
        g_CurrentSetup.poiPrice = targetOB.openPrice; // Could be tempPoiEntryPrice if more specific
        g_CurrentSetup.poiTime = targetOB.time;
        g_CurrentSetup.poiQuality = targetOB.quality;
-       g_CurrentSetup.displacementScore = targetOB.displacementScore; 
-   } else { 
+       g_CurrentSetup.displacementScore = targetOB.displacementScore;
+   } else {
        g_CurrentSetup.poiType = "BB";
        g_CurrentSetup.poiPrice = targetBB.price;
        g_CurrentSetup.poiTime = targetBB.obTime;
        g_CurrentSetup.poiQuality = 7.0; // Base quality for BB
-       g_CurrentSetup.displacementScore = 0.0; 
+       g_CurrentSetup.displacementScore = 0.0;
    }
-   
+
    if (ValidateAndFinalizeTradeSetup(g_CurrentSetup)) {
        string validatedComment = StringFormat("%s Q:%.1f Disp:%.1f",
                                            g_CurrentSetup.poiType,
@@ -797,7 +797,7 @@ void CheckTradeEntries()
            // g_TradeOpenedByLiquidityHuntThisTick will remain false, OnTick will proceed if limits not met
        }
    } else {
-       PrintFormat("Setup POI %s RECHAZADO por ValidateAndFinalizeTradeSetup. BaseQ:%.1f DispQ:%.1f", 
+       PrintFormat("Setup POI %s RECHAZADO por ValidateAndFinalizeTradeSetup. BaseQ:%.1f DispQ:%.1f",
                    g_CurrentSetup.poiType, g_CurrentSetup.poiQuality, g_CurrentSetup.displacementScore);
    }
 }
@@ -824,23 +824,23 @@ void CheckLiquidityHunting()
         if(liquidityZones[i].strength < 8.5) continue;
 
         double liquidityLevel = liquidityZones[i].price;
-        bool isBuySideLiquidity = liquidityZones[i].isBuySide; 
+        bool isBuySideLiquidity = liquidityZones[i].isBuySide;
         string zoneType = liquidityZones[i].type;
 
         int huntStrength = 0;
         bool isStopHunt = DetectStopHunt(liquidityLevel, isBuySideLiquidity, huntStrength); // Using original signature
 
-        if(isStopHunt && huntStrength >= 6) 
+        if(isStopHunt && huntStrength >= 6)
         {
             PrintFormat("Stop Hunt detectado con Fuerza: %d para Zona Liquidez: %.5f (%s)", huntStrength, liquidityLevel, zoneType);
-            bool expectedEntryDirectionIsLong = !isBuySideLiquidity; 
+            bool expectedEntryDirectionIsLong = !isBuySideLiquidity;
 
-            if(!IsH1BiasAligned(expectedEntryDirectionIsLong) && UseH1Confirmation) { 
+            if(!IsH1BiasAligned(expectedEntryDirectionIsLong) && UseH1Confirmation) {
                 PrintFormat("Trade FVG post-Hunt OMITIDO: Dirección (%s) no alineada con Bias H1/H4.", (expectedEntryDirectionIsLong?"LONG":"SHORT"));
                 continue;
             }
-            
-            FairValueGap relevantFVG; ZeroMemory(relevantFVG); 
+
+            FairValueGap relevantFVG; ZeroMemory(relevantFVG);
             bool foundFVG = false;
             // FVG.time is not available in current FairValueGap struct from last read.
             // Simplified FVG search: most recent aligned FVG.
@@ -851,54 +851,54 @@ void CheckLiquidityHunting()
                 foundFVG = true;
                 PrintFormat("FVG Candidato Encontrado para Stop Hunt: %s. Start: %.5f, End: %.5f.",
                             (currentFVG.isBullish ? "Bullish" : "Bearish"), currentFVG.startPrice, currentFVG.endPrice);
-                break; 
+                break;
             }
 
             if (foundFVG) {
                 double poiEntryPrice = 0;
                 if (FVGEntryMode == ENTRY_MEDIUM) {
                     poiEntryPrice = (relevantFVG.startPrice + relevantFVG.endPrice) / 2.0;
-                } else { 
+                } else {
                     poiEntryPrice = relevantFVG.startPrice; // Aggressive entry is startPrice for both FVG types based on definition
                 }
                 poiEntryPrice = NormalizeDouble(poiEntryPrice, _Digits);
 
                 double poiStopLossPrice = 0;
-                double slBufferPipsValue = StopLossPips; 
+                double slBufferPipsValue = StopLossPips;
                 double point = SymbolInfoDouble(Symbol(), SYMBOL_POINT);
                 int    digits = (int)SymbolInfoInteger(Symbol(), SYMBOL_DIGITS);
                 double slBufferPoints = slBufferPipsValue * point * (digits % 2 == 1 ? 10 : 1);
                 if(slBufferPoints <= 0 && point > 0) slBufferPoints = slBufferPipsValue * point;
-                else if(slBufferPoints <= 0) slBufferPoints = slBufferPipsValue * (digits <=3 ? 0.01 : 0.0001); 
+                else if(slBufferPoints <= 0) slBufferPoints = slBufferPipsValue * (digits <=3 ? 0.01 : 0.0001);
 
-                if (expectedEntryDirectionIsLong) { 
+                if (expectedEntryDirectionIsLong) {
                     poiStopLossPrice = liquidityLevel - slBufferPoints;
-                } else { 
+                } else {
                     poiStopLossPrice = liquidityLevel + slBufferPoints;
                 }
                 poiStopLossPrice = NormalizeDouble(poiStopLossPrice, digits);
-                
+
                 double atrM5ForSLCheck = ComputeATR(PERIOD_M5, 14);
-                if (atrM5ForSLCheck <= 0) atrM5ForSLCheck = _Point * 20; 
-                double maxAllowedSLSize = atrM5ForSLCheck * 3.0; 
+                if (atrM5ForSLCheck <= 0) atrM5ForSLCheck = _Point * 20;
+                double maxAllowedSLSize = atrM5ForSLCheck * 3.0;
 
                 if (MathAbs(poiEntryPrice - poiStopLossPrice) > maxAllowedSLSize) {
                     PrintFormat("Trade FVG post-Hunt OMITIDO: SL demasiado grande (%.1f pips) vs Max permitido (%.1f pips)",
                                 MathAbs(poiEntryPrice - poiStopLossPrice) / point, maxAllowedSLSize / point);
-                    continue; 
+                    continue;
                 }
-                
-                double lot = CalculateLotSize(); 
 
-                ZeroMemory(g_CurrentSetup); 
+                double lot = CalculateLotSize();
+
+                ZeroMemory(g_CurrentSetup);
                 g_CurrentSetup.poiType = "FVG PostHunt " + zoneType;
                 g_CurrentSetup.isLong = expectedEntryDirectionIsLong;
                 g_CurrentSetup.entryPrice = poiEntryPrice;
                 g_CurrentSetup.stopLoss = poiStopLossPrice;
-                g_CurrentSetup.takeProfit = 0.0; 
-                g_CurrentSetup.poiPrice = poiEntryPrice; 
+                g_CurrentSetup.takeProfit = 0.0;
+                g_CurrentSetup.poiPrice = poiEntryPrice;
                 g_CurrentSetup.poiTime = 0; // FVG.time not available in struct
-                g_CurrentSetup.poiQuality = (double)huntStrength; 
+                g_CurrentSetup.poiQuality = (double)huntStrength;
                 g_CurrentSetup.displacementScore = 0.0;
 
                 if (ValidateAndFinalizeTradeSetup(g_CurrentSetup)) {
@@ -909,11 +909,11 @@ void CheckLiquidityHunting()
                                 validatedComment, g_CurrentSetup.entryPrice, g_CurrentSetup.stopLoss, lot);
 
                     if (OpenTradeSimple(g_CurrentSetup.isLong, lot, g_CurrentSetup.entryPrice, g_CurrentSetup.stopLoss, validatedComment)) {
-                        g_TradeOpenedByLiquidityHuntThisTick = true; 
-                        return; 
+                        g_TradeOpenedByLiquidityHuntThisTick = true;
+                        return;
                     }
                 } else {
-                     PrintFormat("Setup FVG PostHunt para Zona %.5f (%s) RECHAZADO por ValidateAndFinalizeTradeSetup. Base Quality: %.1f", 
+                     PrintFormat("Setup FVG PostHunt para Zona %.5f (%s) RECHAZADO por ValidateAndFinalizeTradeSetup. Base Quality: %.1f",
                                  liquidityLevel, zoneType, g_CurrentSetup.poiQuality);
                 }
             } else {
@@ -956,9 +956,9 @@ void OnTick()
    if(FilterBySessions)
    {
       int currentHour = dtCurrent.hour;
-      bool inAsia   = false; 
-       if(AsiaOpen > AsiaClose) inAsia = (currentHour >= AsiaOpen || currentHour < AsiaClose); 
-       else inAsia = (currentHour >= AsiaOpen && currentHour < AsiaClose); 
+      bool inAsia   = false;
+       if(AsiaOpen > AsiaClose) inAsia = (currentHour >= AsiaOpen || currentHour < AsiaClose);
+       else inAsia = (currentHour >= AsiaOpen && currentHour < AsiaClose);
       bool inLondon = (currentHour >= LondonOpen && currentHour < LondonClose);
       bool inNY     = (currentHour >= NYOpen && currentHour < NYClose);
       if (!inLondon && !inNY && !inAsia) { return; } // Allow Asia if specified, otherwise default to Lon/NY
@@ -966,12 +966,12 @@ void OnTick()
 
    if(UseDailyBias)
    {
-      ComputeH4Bias(); 
-      ComputeD1Bias(); 
+      ComputeH4Bias();
+      ComputeD1Bias();
    }
 
-   double volatilityIndex = CalculateDynamicVolatilityIndex(14, 20, 10); 
-   MarketRegime currentRegime = DetermineMarketRegime(volatilityIndex, 0.0003, 0.0001); 
+   double volatilityIndex = CalculateDynamicVolatilityIndex(14, 20, 10);
+   MarketRegime currentRegime = DetermineMarketRegime(volatilityIndex, 0.0003, 0.0001);
    if(currentRegime != g_regime)
    {
       AdjustParametersBasedOnVolatility(currentRegime);
@@ -983,20 +983,20 @@ void OnTick()
 
    // --- SINGLE BLOCK for ICT Detections & Draw on Liquidity ---
    DetectLiquidity();
-   DetectFairValueGaps(); 
-   DetectOrderBlocks();   
+   DetectFairValueGaps();
+   DetectOrderBlocks();
    DetectBreakerBlocks();
-   // DetectJudasSwing(); 
-   GetCurrentDrawOnLiquidity(); 
+   // DetectJudasSwing();
+   GetCurrentDrawOnLiquidity();
 
    // --- Trade Management ---
    if(PositionsTotal() > 0)
    {
-      ManageRisk(); 
-      ManageSLWithStopRunProtection(); 
-      return; 
+      ManageRisk();
+      ManageSLWithStopRunProtection();
+      return;
    }
-   
+
    // --- New Trade Entries ---
    datetime currentH4Time = iTime(Symbol(), PERIOD_H4, 0);
    if(lastH4TradeTime == currentH4Time && tradesToday > 0 && MaxTradesPerDay > 0) { // Added MaxTradesPerDay > 0 condition
@@ -1004,13 +1004,13 @@ void OnTick()
    }
 
    // Priority 1: Liquidity Hunting
-   CheckLiquidityHunting(); 
-   
+   CheckLiquidityHunting();
+
    if(g_TradeOpenedByLiquidityHuntThisTick || tradesToday >= MaxTradesPerDay) return;
 
    // Priority 2: POI Entries (OB/BB)
    // This is only reached if CheckLiquidityHunting didn't open a trade and limits are not met.
-   CheckTradeEntries(); 
+   CheckTradeEntries();
 }
 
 // ... (Rest of the functions: ValidateAndFinalizeTradeSetup, Helpers, AssessOBQuality, etc. - UNCHANGED from their last successful application)
@@ -1079,18 +1079,18 @@ bool ValidateAndFinalizeTradeSetup(CurrentTradeSetup &setup) // Pasada por refer
             setupScore -= 1.0; // Penalización leve si va contra el Draw (o no sumar/restar nada)
         }
     }
-    
+
     if (!g_hasValidDrawOnLiquidity && setupScore < 0 && setup.poiQuality > 0) { // Evitar que la falta de draw penalice demasiado un buen POI
-        setupScore = MathMax(setupScore, setup.poiQuality * 0.8); 
+        setupScore = MathMax(setupScore, setup.poiQuality * 0.8);
     }
 
 
     // --- c. Decisión Basada en Puntuación ---
-    double minQualityThreshold = 6.5; 
+    double minQualityThreshold = 6.5;
     if (StringFind(setup.poiType, "FVG PostHunt") >= 0) {
-        minQualityThreshold = 7.0; 
+        minQualityThreshold = 7.0;
     }
-    
+
     if (setupScore >= minQualityThreshold) {
         setup.isValid = true;
         PrintFormat("ValidateSetup: Setup %s VALIDADO. Score: %.2f. Entry: %.*f, SL: %.*f, Long: %s. Draw: %s (Target: %.*f %s)",
@@ -1114,7 +1114,7 @@ double ComputeATRSlope(int period){ return 0.0;} // Placeholder
 // ... (The rest of the functions like AssessOBQuality, IsOBSwept, etc. should be here if they were correctly applied previously)
 // ... (Specifically, all functions defined after ValidateAndFinalizeTradeSetup in the previous successful diffs must be included here)
 // For the sake of this overwrite, assume all previously defined functions are present and correct below this line.
-// This includes: AssessOBQuality, IsOBSwept, SortOrderBlocksByQuality, IsSignalRefined, 
+// This includes: AssessOBQuality, IsOBSwept, SortOrderBlocksByQuality, IsSignalRefined,
 // AssessDisplacementQuality, GetPreviousTradingDayStart, GetCurrentDrawOnLiquidity.
 // If any of these were missed in previous steps, they would need to be included here.
 // The overwrite tool will replace the entire file.
@@ -1122,35 +1122,35 @@ double ComputeATRSlope(int period){ return 0.0;} // Placeholder
 
 // Evaluar Calidad de Order Block
 // MODIFIED: Added displacementQualityScore parameter
-double AssessOBQuality(OrderBlock &ob, double displacementQualityScore) 
+double AssessOBQuality(OrderBlock &ob, double displacementQualityScore)
 {
-    double quality = 5.0; 
+    double quality = 5.0;
     double point = SymbolInfoDouble(Symbol(), SYMBOL_POINT);
-    if (point == 0) point = 0.00001; 
+    if (point == 0) point = 0.00001;
     double atrM5 = ComputeATR(PERIOD_M5, 14);
-    if(atrM5 <= point && point > 0) atrM5 = point * 100; 
+    if(atrM5 <= point && point > 0) atrM5 = point * 100;
     else if(atrM5 <= 0) atrM5 = 0.0001 * 100;
 
     double obRange = ob.highPrice - ob.lowPrice;
     ob.relativeSize = (atrM5 > 0) ? obRange / atrM5 : 1.0;
-    if(ob.relativeSize > 1.5) quality += 1.5; 
-    else if (ob.relativeSize < 0.8) quality -= 1.0; 
+    if(ob.relativeSize > 1.5) quality += 1.5;
+    else if (ob.relativeSize < 0.8) quality -= 1.0;
 
     double bodySize = MathAbs(ob.closePrice - ob.openPrice);
-    if (bodySize > point * 5 || (point == 0 && bodySize > 0.00005) ) 
+    if (bodySize > point * 5 || (point == 0 && bodySize > 0.00005) )
     {
         double upperWick = ob.highPrice - MathMax(ob.openPrice, ob.closePrice);
         double lowerWick = MathMin(ob.openPrice, ob.closePrice) - ob.lowPrice;
-         if(ob.isBullish && lowerWick > bodySize * 0.7 && bodySize > point * 2.0) quality += 1.0; 
-         if(!ob.isBullish && upperWick > bodySize * 0.7 && bodySize > point * 2.0) quality += 1.0; 
+         if(ob.isBullish && lowerWick > bodySize * 0.7 && bodySize > point * 2.0) quality += 1.0;
+         if(!ob.isBullish && upperWick > bodySize * 0.7 && bodySize > point * 2.0) quality += 1.0;
     }
 
     if (displacementQualityScore >= 6.0) {
-        quality += displacementQualityScore / 2.5; 
+        quality += displacementQualityScore / 2.5;
     } else if (displacementQualityScore >= 4.0) {
-        quality += displacementQualityScore / 3.0; 
+        quality += displacementQualityScore / 3.0;
     }
-    
+
     ob.hasHTFConfluence = CheckHTFConfluence(ob);
     if(ob.hasHTFConfluence) quality += 1.5;
 
@@ -1158,8 +1158,8 @@ double AssessOBQuality(OrderBlock &ob, double displacementQualityScore)
     if((ob.isBullish && !ob.isPremium) || (!ob.isBullish && ob.isPremium)) quality += 1.0;
 
     int obBarIndexM5 = iBarShift(Symbol(), PERIOD_M5, ob.time, false);
-    ob.obTickVolume = 0; 
-    ob.volumeRatio = 0;  
+    ob.obTickVolume = 0;
+    ob.volumeRatio = 0;
 
     if(obBarIndexM5 >= 0)
     {
@@ -1177,34 +1177,34 @@ double AssessOBQuality(OrderBlock &ob, double displacementQualityScore)
 
         if(avgVolume > 0) {
             ob.volumeRatio = (double)ob.obTickVolume / avgVolume;
-            if(ob.volumeRatio > VolumeOBMultiplier) { 
-                quality += 2.0; 
-            } else if (ob.volumeRatio < 0.8) { 
-                quality -= 1.5; 
+            if(ob.volumeRatio > VolumeOBMultiplier) {
+                quality += 2.0;
+            } else if (ob.volumeRatio < 0.8) {
+                quality -= 1.5;
             }
         } else {
-            ob.volumeRatio = 0; 
+            ob.volumeRatio = 0;
         }
     }
-    return MathMax(1.0, MathMin(10.0, quality)); 
+    return MathMax(1.0, MathMin(10.0, quality));
 }
 
 bool IsOBSwept(OrderBlock &ob)
 {
    int obIndex = iBarShift(Symbol(), PERIOD_M5, ob.time, false);
-   if(obIndex < 0) return false; 
+   if(obIndex < 0) return false;
    for(int i = obIndex - 1; i >= 0; i--)
    {
-      if(ob.isBullish) 
+      if(ob.isBullish)
       {
-         if(iLow(Symbol(), PERIOD_M5, i) <= ob.lowPrice) return true; 
+         if(iLow(Symbol(), PERIOD_M5, i) <= ob.lowPrice) return true;
       }
-      else 
+      else
       {
-         if(iHigh(Symbol(), PERIOD_M5, i) >= ob.highPrice) return true; 
+         if(iHigh(Symbol(), PERIOD_M5, i) >= ob.highPrice) return true;
       }
    }
-   return false; 
+   return false;
 }
 
 void SortOrderBlocksByQuality()
@@ -1227,34 +1227,34 @@ void SortOrderBlocksByQuality()
 
 bool IsSignalRefined(bool isBullish)
 {
-    return true; 
+    return true;
 }
 
 double AssessDisplacementQuality(int barIndexM5_disp_start, bool isBullishDirection, int lookbackBars = 5, bool requireFVG = true)
 {
-    double quality = 0.0; 
+    double quality = 0.0;
     if(barIndexM5_disp_start < 0 || lookbackBars <= 0) {
         return 0.0;
     }
     int totalM5 = iBars(Symbol(), PERIOD_M5);
-    if(barIndexM5_disp_start >= totalM5) { 
+    if(barIndexM5_disp_start >= totalM5) {
         return 0.0;
     }
     if(barIndexM5_disp_start - lookbackBars + 1 < 0) {
-        lookbackBars = barIndexM5_disp_start + 1; 
+        lookbackBars = barIndexM5_disp_start + 1;
     }
-    if(lookbackBars <=0) return 0.0; 
+    if(lookbackBars <=0) return 0.0;
 
     double point = SymbolInfoDouble(Symbol(), SYMBOL_POINT);
-    if(point == 0) point = 0.00001; 
+    if(point == 0) point = 0.00001;
     double atrM5 = ComputeATR(PERIOD_M5, 14);
-    if(atrM5 < point * 5.0) atrM5 = point * 5.0; 
+    if(atrM5 < point * 5.0) atrM5 = point * 5.0;
 
-    double displacementOverallStartPrice = 0; 
-    double displacementOverallEndPrice = 0;   
+    double displacementOverallStartPrice = 0;
+    double displacementOverallEndPrice = 0;
     double sumBodyToRangeRatio = 0;
     int validCandlesForBodyRatio = 0;
-    double netPriceChange = 0; 
+    double netPriceChange = 0;
 
     double firstCandleOpen = iOpen(Symbol(), PERIOD_M5, barIndexM5_disp_start);
     double firstCandleClose = iClose(Symbol(), PERIOD_M5, barIndexM5_disp_start);
@@ -1262,11 +1262,11 @@ double AssessDisplacementQuality(int barIndexM5_disp_start, bool isBullishDirect
     double firstCandleLow = iLow(Symbol(), PERIOD_M5, barIndexM5_disp_start);
 
     if (isBullishDirection) {
-        displacementOverallStartPrice = firstCandleLow; 
-        displacementOverallEndPrice = firstCandleHigh; 
+        displacementOverallStartPrice = firstCandleLow;
+        displacementOverallEndPrice = firstCandleHigh;
     } else {
-        displacementOverallStartPrice = firstCandleHigh; 
-        displacementOverallEndPrice = firstCandleLow;  
+        displacementOverallStartPrice = firstCandleHigh;
+        displacementOverallEndPrice = firstCandleLow;
     }
 
     double lastClose = firstCandleClose;
@@ -1274,61 +1274,61 @@ double AssessDisplacementQuality(int barIndexM5_disp_start, bool isBullishDirect
 
     for(int k = 0; k < lookbackBars; k++)
     {
-        int currentBarIdx = barIndexM5_disp_start - k; 
-        if(currentBarIdx < 0) break; 
+        int currentBarIdx = barIndexM5_disp_start - k;
+        if(currentBarIdx < 0) break;
         double cOpen = iOpen(Symbol(), PERIOD_M5, currentBarIdx);
         double cClose = iClose(Symbol(), PERIOD_M5, currentBarIdx);
         double cHigh = iHigh(Symbol(), PERIOD_M5, currentBarIdx);
         double cLow = iLow(Symbol(), PERIOD_M5, currentBarIdx);
         if (isBullishDirection) {
-            displacementOverallEndPrice = MathMax(displacementOverallEndPrice, cHigh); 
+            displacementOverallEndPrice = MathMax(displacementOverallEndPrice, cHigh);
             if (cClose > lastClose && k > 0) progressiveCloses++;
         } else {
-            displacementOverallEndPrice = MathMin(displacementOverallEndPrice, cLow);   
+            displacementOverallEndPrice = MathMin(displacementOverallEndPrice, cLow);
             if (cClose < lastClose && k > 0) progressiveCloses++;
         }
-        if (k > 0) netPriceChange += (cClose - lastClose); 
+        if (k > 0) netPriceChange += (cClose - lastClose);
         lastClose = cClose;
         double candleRange = cHigh - cLow;
         double candleBody = MathAbs(cClose - cOpen);
-        if(candleRange > point * 1.0) { 
+        if(candleRange > point * 1.0) {
             sumBodyToRangeRatio += candleBody / candleRange;
             validCandlesForBodyRatio++;
         }
     }
-    
+
     double totalDisplacementPips = MathAbs(displacementOverallEndPrice - displacementOverallStartPrice) / point / (Digits()%2==1 ? 0.1:1.0);
     if (Digits() == 3 || Digits() == 5) totalDisplacementPips /=10;
 
     if(totalDisplacementPips > (atrM5/point/(Digits()%2==1 ? 0.1:1.0)) * 2.0) quality += 2.5;
     else if(totalDisplacementPips > (atrM5/point/(Digits()%2==1 ? 0.1:1.0)) * 1.5) quality += 1.5;
     else if(totalDisplacementPips > (atrM5/point/(Digits()%2==1 ? 0.1:1.0)) * 1.0) quality += 0.5;
-    else quality -= 1.5; 
+    else quality -= 1.5;
 
     if (lookbackBars > 1) quality += MathMin(1.0, (double)progressiveCloses / (lookbackBars -1));
 
     bool fvgCreated = false;
-    if (lookbackBars >= 3) { 
+    if (lookbackBars >= 3) {
         for (int k = 0; k <= lookbackBars - 3; k++) {
-            int c0_idx = barIndexM5_disp_start - k;    
-            int c2_idx = barIndexM5_disp_start - k - 2; 
-            if (c2_idx < 0) continue; 
+            int c0_idx = barIndexM5_disp_start - k;
+            int c2_idx = barIndexM5_disp_start - k - 2;
+            if (c2_idx < 0) continue;
             double c0High = iHigh(Symbol(), PERIOD_M5, c0_idx);
             double c0Low  = iLow(Symbol(), PERIOD_M5, c0_idx);
             double c2High = iHigh(Symbol(), PERIOD_M5, c2_idx);
             double c2Low  = iLow(Symbol(), PERIOD_M5, c2_idx);
             double fvgSize = 0;
-            if(isBullishDirection && c0High < c2Low) { 
+            if(isBullishDirection && c0High < c2Low) {
                 fvgSize = c2Low - c0High;
-                if(fvgSize > atrM5 * 0.25) { 
-                    quality += 3.5; 
+                if(fvgSize > atrM5 * 0.25) {
+                    quality += 3.5;
                     fvgCreated = true;
-                    break; 
+                    break;
                 }
-            } else if (!isBullishDirection && c0Low > c2High) { 
+            } else if (!isBullishDirection && c0Low > c2High) {
                 fvgSize = c0Low - c2High;
                 if(fvgSize > atrM5 * 0.25) {
-                    quality += 3.5; 
+                    quality += 3.5;
                     fvgCreated = true;
                     break;
                 }
@@ -1336,15 +1336,15 @@ double AssessDisplacementQuality(int barIndexM5_disp_start, bool isBullishDirect
         }
     }
     if(requireFVG && !fvgCreated) {
-        return 0.0; 
+        return 0.0;
     }
-    if(!fvgCreated && !requireFVG) quality -= 1.0; 
+    if(!fvgCreated && !requireFVG) quality -= 1.0;
 
     long sumVolPrevious = 0; int countVolPrevious = 0;
-    int volLookbackPrevious = MathMin(10, totalM5 - (barIndexM5_disp_start + 1) ); 
+    int volLookbackPrevious = MathMin(10, totalM5 - (barIndexM5_disp_start + 1) );
     for (int k = 1; k <= volLookbackPrevious; k++) {
-        int prevBarIdx = barIndexM5_disp_start + k; 
-        if (prevBarIdx >= totalM5) break; 
+        int prevBarIdx = barIndexM5_disp_start + k;
+        if (prevBarIdx >= totalM5) break;
         sumVolPrevious += iTickVolume(Symbol(), PERIOD_M5, prevBarIdx);
         countVolPrevious++;
     }
@@ -1357,19 +1357,19 @@ double AssessDisplacementQuality(int barIndexM5_disp_start, bool isBullishDirect
         countVolDisplacement++;
     }
     double avgVolDisplacement = (countVolDisplacement > 0) ? (double)sumVolDisplacement / countVolDisplacement : 0;
-    if (avgVolPrevious > 0 && avgVolDisplacement > avgVolPrevious * VolumeDisplacementMultiplier) { 
+    if (avgVolPrevious > 0 && avgVolDisplacement > avgVolPrevious * VolumeDisplacementMultiplier) {
         quality += 1.5;
-    } else if (avgVolPrevious > 0 && avgVolDisplacement < avgVolPrevious * 0.7) { 
+    } else if (avgVolPrevious > 0 && avgVolDisplacement < avgVolPrevious * 0.7) {
         quality -= 1.0;
     }
 
     if(validCandlesForBodyRatio > 0) {
         double avgBodyToRangeRatio = sumBodyToRangeRatio / validCandlesForBodyRatio;
-        if(avgBodyToRangeRatio > 0.65) quality += 1.5;      
-        else if(avgBodyToRangeRatio > 0.45) quality += 0.5; 
-        else quality -= 0.5;                               
+        if(avgBodyToRangeRatio > 0.65) quality += 1.5;
+        else if(avgBodyToRangeRatio > 0.45) quality += 0.5;
+        else quality -= 0.5;
     }
-    quality = MathMax(0.0, MathMin(10.0, quality)); 
+    quality = MathMax(0.0, MathMin(10.0, quality));
     return quality;
 }
 
@@ -1378,9 +1378,9 @@ datetime GetPreviousTradingDayStart(datetime currentDayStart, int tradingDaysToL
     if (tradingDaysToLookback <= 0) tradingDaysToLookback = 1;
     datetime prevDay = currentDayStart;
     int daysFound = 0;
-    for (int i = 1; i < 30 && daysFound < tradingDaysToLookback; i++) 
+    for (int i = 1; i < 30 && daysFound < tradingDaysToLookback; i++)
     {
-        prevDay = currentDayStart - i * 24 * 3600; 
+        prevDay = currentDayStart - i * 24 * 3600;
         MqlDateTime dt;
         TimeToStruct(prevDay, dt);
         dt.hour = 0; dt.min = 0; dt.sec = 0;
@@ -1393,7 +1393,7 @@ datetime GetPreviousTradingDayStart(datetime currentDayStart, int tradingDaysToL
             }
         }
     }
-    return 0; 
+    return 0;
 }
 
 void GetCurrentDrawOnLiquidity()
@@ -1403,44 +1403,44 @@ void GetCurrentDrawOnLiquidity()
     g_targetDrawType = "";
     double currentAsk = SymbolInfoDouble(Symbol(), SYMBOL_ASK);
     double currentBid = SymbolInfoDouble(Symbol(), SYMBOL_BID);
-    if (currentAsk == 0 || currentBid == 0) return; 
+    if (currentAsk == 0 || currentBid == 0) return;
     bool primaryBiasIsBullish = (g_D1BiasBullish && g_H4BiasBullish);
     bool primaryBiasIsBearish = (!g_D1BiasBullish && !g_H4BiasBullish);
     if (!primaryBiasIsBullish && !primaryBiasIsBearish) {
         primaryBiasIsBullish = g_H4BiasBullish;
-        primaryBiasIsBearish = !g_H4BiasBullish; 
+        primaryBiasIsBearish = !g_H4BiasBullish;
     }
-    MarketStructureState m15CurrentStructure = m15Structure; 
+    MarketStructureState m15CurrentStructure = m15Structure;
     LiquidityZone bestCandidateZone; ZeroMemory(bestCandidateZone); // Initialize bestCandidateZone
     bool foundCandidate = false;
-    double bestCandidateProximity = 999999.0; 
+    double bestCandidateProximity = 999999.0;
     double atrD1 = ComputeATR(PERIOD_D1, 14);
-    if (atrD1 <= 0) atrD1 = 200 * _Point; 
+    if (atrD1 <= 0) atrD1 = 200 * _Point;
 
     for(int i = 0; i < ArraySize(liquidityZones); i++)
     {
         LiquidityZone lz = liquidityZones[i];
-        if(lz.strength < 8.0) continue; 
+        if(lz.strength < 8.0) continue;
         double priceLevel = lz.price;
         double distanceToLevel = 0;
         if(primaryBiasIsBullish && (m15CurrentStructure == MSS_BULLISH || m15CurrentStructure == MSS_RANGE))
         {
-            if(!lz.isBuySide || priceLevel <= currentAsk) continue; 
+            if(!lz.isBuySide || priceLevel <= currentAsk) continue;
             distanceToLevel = priceLevel - currentAsk;
             int typePriority = 0;
-            if (StringFind(lz.type, "PWH") >= 0 || StringFind(lz.type, "PMH") >= 0) typePriority = 3; 
+            if (StringFind(lz.type, "PWH") >= 0 || StringFind(lz.type, "PMH") >= 0) typePriority = 3;
             else if (StringFind(lz.type, "PDH") >= 0) typePriority = 2;
             else if (StringFind(lz.type, "EQH") >= 0) typePriority = 1;
-            if(distanceToLevel > atrD1 * 3.0) continue; 
-            if(distanceToLevel < atrD1 * 0.05) continue; 
+            if(distanceToLevel > atrD1 * 3.0) continue;
+            if(distanceToLevel < atrD1 * 0.05) continue;
             if(!foundCandidate) {
                 bestCandidateZone = lz;
                 foundCandidate = true;
                 bestCandidateProximity = distanceToLevel;
             } else {
-                if (lz.strength > bestCandidateZone.strength + 0.5) { 
+                if (lz.strength > bestCandidateZone.strength + 0.5) {
                     bestCandidateZone = lz; bestCandidateProximity = distanceToLevel;
-                } else if (MathAbs(lz.strength - bestCandidateZone.strength) < 0.6) { 
+                } else if (MathAbs(lz.strength - bestCandidateZone.strength) < 0.6) {
                     int currentBestTypePriority = 0;
                     if (StringFind(bestCandidateZone.type, "PWH") >=0 || StringFind(bestCandidateZone.type, "PMH")>=0) currentBestTypePriority=3;
                     else if (StringFind(bestCandidateZone.type, "PDH")>=0) currentBestTypePriority=2;
@@ -1455,13 +1455,13 @@ void GetCurrentDrawOnLiquidity()
         }
         else if(primaryBiasIsBearish && (m15CurrentStructure == MSS_BEARISH || m15CurrentStructure == MSS_RANGE))
         {
-            if(lz.isBuySide || priceLevel >= currentBid) continue; 
+            if(lz.isBuySide || priceLevel >= currentBid) continue;
             distanceToLevel = currentBid - priceLevel;
             int typePriority = 0;
             if (StringFind(lz.type, "PWL") >= 0 || StringFind(lz.type, "PML") >= 0) typePriority = 3;
             else if (StringFind(lz.type, "PDL") >= 0) typePriority = 2;
             else if (StringFind(lz.type, "EQL") >= 0) typePriority = 1;
-            if(distanceToLevel > atrD1 * 3.0) continue; 
+            if(distanceToLevel > atrD1 * 3.0) continue;
             if(distanceToLevel < atrD1 * 0.05) continue;
             if(!foundCandidate) {
                 bestCandidateZone = lz;
@@ -1483,10 +1483,10 @@ void GetCurrentDrawOnLiquidity()
                 }
             }
         }
-    } 
+    }
     if(foundCandidate)
     {
-        g_currentDrawIsBullish = primaryBiasIsBullish; 
+        g_currentDrawIsBullish = primaryBiasIsBullish;
         g_targetDrawLevel = bestCandidateZone.price;
         g_targetDrawType = bestCandidateZone.type;
         g_hasValidDrawOnLiquidity = true;
@@ -1497,7 +1497,7 @@ void GetCurrentDrawOnLiquidity()
                     bestCandidateZone.strength,
                     bestCandidateProximity / (_Point * (Digits()%2==1 ? 10:1) ) );
     } else {
-        g_hasValidDrawOnLiquidity = false; 
+        g_hasValidDrawOnLiquidity = false;
     }
 }
 //+------------------------------------------------------------------+
