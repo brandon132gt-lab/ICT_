@@ -1,0 +1,2942 @@
+//+------------------------------------------------------------------+
+//|                                       Liquidity 7.0 VOLATILIDAD.mq5 |
+//| EA basado en el estilo ICT con mejoras en selección de entradas |
+//| basadas en sesgos, zonas de liquidez y otras funciones avanzadas |
+//|                         *** CÓDIGO CORREGIDO *** |
+//+------------------------------------------------------------------+
+#property strict
+
+#include <Trade\Trade.mqh>
+CTrade trade;
+
+//+------------------------------------------------------------------+
+//| Estructuras y variables globales y enumerados adicionales         |
+//+------------------------------------------------------------------+
+struct SwingPoint
+{
+   datetime time;
+   double   price;
+   bool     isHigh;
+};
+
+struct LiquidityZone {
+   double   price;
+   bool     isBuySide;
+   datetime time;
+   double   strength; // Puntuación de la fuerza/importancia de la zona
+   string   type;     // Nuevo campo: "Swing", "EQH/EQL", "Session", "Old H/L"
+};
+
+struct OrderBlock {
+   bool     isBullish;
+   double   openPrice;
+   double   closePrice;
+   double   highPrice;
+   double   lowPrice;
+   datetime time;
+   bool     isSwept;
+   double   quality;
+   bool     hasHTFConfluence;
+   bool     isPremium;
+   bool     isValid;
+   double   relativeSize;
+   double   volumeRatio;
+};
+
+struct FairValueGap {
+   double startPrice;
+   double endPrice;
+   bool   isBullish;
+};
+
+struct BreakerBlock {
+   double   price;
+   bool     isBullish;
+   datetime obTime;
+};
+
+// Estructuras para zonas de liquidez en H1 y H4 (pueden simplificarse o eliminarse si todo se maneja en LiquidityZone)
+struct LiquidityZoneH1 {
+   double   price;
+   bool     isBuySide;
+   datetime time;
+   double   strength;
+};
+
+struct LiquidityZoneH4 {
+   double   price;
+   bool     isBuySide;
+   datetime time;
+   double   strength;
+};
+
+enum MarketRegime
+{
+    HIGH_VOLATILITY,
+    LOW_VOLATILITY,
+    RANGE_MARKET
+};
+
+enum MarketStructureState
+{
+   MSS_BULLISH,
+   MSS_BEARISH,
+   MSS_RANGE,
+   MSS_UNKNOWN
+};
+
+enum EntryMode { ENTRY_MEDIUM = 0, ENTRY_AGGRESSIVE = 1 };
+
+//+------------------------------------------------------------------+
+//| Arrays y Variables Globales                                      |
+//+------------------------------------------------------------------+
+LiquidityZone    liquidityZones[]; // Array principal para TODAS las zonas de liquidez
+OrderBlock       orderBlocks[];
+FairValueGap     fairValueGaps[];
+BreakerBlock     breakerBlocks[];
+// Los arrays específicos H1/H4 pueden eliminarse si integramos todo en liquidityZones
+// LiquidityZoneH1  liquidityZonesH1[];
+// LiquidityZoneH4  liquidityZonesH4[];
+
+// Variables globales para bias y control
+bool g_H4BiasBullish = false;
+bool g_D1BiasBullish = false;
+static int partialClosedFlags[100];
+static int tradesToday = 0;
+MarketStructureState m15Structure = MSS_UNKNOWN;
+MarketRegime g_regime = RANGE_MARKET; // Inicializar con un valor por defecto
+static datetime lastH4TradeTime = 0;
+double g_swingHigh_M15 = 0.0;
+double g_swingLow_M15  = 0.0;
+
+// Variables dinámicas (modificables por volatilidad, etc.)
+double dyn_ATRMultiplierForMinPenetration;
+double dyn_ATRMultiplierForMaxPenetration;
+int    dyn_BreakEvenPips;
+int    dyn_TrailingDistancePips;
+
+// Variables para almacenar máximos/mínimos de sesiones y días/semanas/meses anteriores
+double AsiaHigh = 0, AsiaLow = 0;
+double LondonHigh = 0, LondonLow = 0;
+double NYHigh = 0, NYLow = 0;
+datetime AsiaStartTime, LondonStartTime, NYStartTime; // Para saber si la sesión ha comenzado
+double PDH = 0, PDL = 0; // Previous Day High/Low
+double PWH = 0, PWL = 0; // Previous Week High/Low
+double PMH = 0, PML = 0; // Previous Month High/Low
+
+// *** NUEVO: Almacenamiento para volúmenes iniciales ***
+ulong  g_positionTickets[]; // Almacena los tickets de las posiciones activas
+double g_initialVolumes[];  // Almacena el volumen inicial correspondiente a cada ticket
+
+//+------------------------------------------------------------------+
+//| Inputs del EA Agrupados                                          |
+//+------------------------------------------------------------------+
+
+// --- Configuración General de Trading ---
+input group "--- Configuración General de Trading ---"
+input double LotSize                  = 10;      // Lote base para las operaciones
+input int    MaxTradesPerDay          = 3;       // Máximo de trades permitidos por día
+input int    StopLossPips             = 10;      // Stop Loss inicial en pips
+input int    EntryTolerancePips       = 5;       // Tolerancia en pips para la entrada respecto al POI
+input int    MinimumHoldTimeSeconds   = 300;     // Tiempo mínimo en segundos antes de gestionar un trade (opcional)
+input double RiskRewardRatio          = 3.0;     // Ratio Riesgo:Beneficio para el TP inicial
+input int    BufferPips               = 20;      // Buffer general en pips (usado en Trailing Fractal, etc.)
+
+// --- Gestión de Riesgo y Stops ---
+input group "--- Gestión de Riesgo y Stops ---"
+input bool   UseBreakEven             = true;    // Activar/Desactivar Break Even
+input int    BreakEvenPips            = 15;      // Pips en positivo para mover SL a Break Even
+input bool   UseTrailingStop          = false;   // Activar/Desactivar Trailing Stop estándar (ignorado si Trailing Fractal está activo)
+input int    TrailingDistancePips     = 10;      // Distancia en pips para el Trailing Stop estándar
+input bool   UsePartialClose          = false;   // Activar/Desactivar lógica de cierres parciales avanzados
+input int    PartialClosePips         = 20;      // Pips para el primer cierre parcial (No usado en la lógica avanzada actual)
+input double PartialClosePercent      = 50.0;    // Porcentaje a cerrar en el primer parcial (No usado en la lógica avanzada actual)
+input bool   UseFractalStopHuntTrailing = true;   // Activar/Desactivar Trailing Stop basado en Fractales M15
+input int    FractalTrailingDepth     = 2;       // Profundidad del fractal para el trailing (2 = fractal de 5 barras)
+input int    FractalTrailingSearchBars= 100;     // Barras hacia atrás para buscar el fractal desde la entrada
+input double FractalTrailingBufferPips= 3.0;     // Buffer en pips para el SL fractal
+
+// --- Filtros de Sesión y Bias ---
+input group " --- Filtros de Sesión y Bias ---"
+input bool   FilterBySessions         = false;   // Activar/Desactivar filtro por sesiones de trading
+input int    AsiaOpen                 = 23;      // Hora de Apertura Sesión Asiática (GMT del servidor)
+input int    AsiaClose                = 7;       // Hora de Cierre Sesión Asiática (GMT del servidor)
+input int    LondonOpen               = 7;       // Hora de Apertura Sesión Londres (GMT del servidor)
+input int    LondonClose              = 10;      // Hora de Cierre Sesión Londres (GMT del servidor)
+input int    NYOpen                   = 13;      // Hora de Apertura Sesión Nueva York (GMT del servidor)
+input int    NYClose                  = 16;      // Hora de Cierre Sesión Nueva York (GMT del servidor)
+input bool   UseDailyBias             = true;    // Considerar el Bias Diario (D1) para filtrar trades
+input bool   UseH1Confirmation        = true;    // Requerir confirmación del Bias H1 (o H4 si H1 no es claro)
+
+// --- Parámetros de Estructura de Mercado (M15) y ATR ---
+input group " --- Parámetros de Estructura de Mercado (M15) y ATR ---"
+input int    FractalLookback_M15      = 40;      // Lookback para la detección de estructura en M15
+input int    ATRPeriod_M15            = 14;      // Período del ATR en M15
+input double ATRMultiplier            = 1.0;     // Multiplicador ATR general (puede usarse en SL/TP inicial o buffers)
+input int    ATR_MA_Period            = 20;      // Período de la Media Móvil del ATR (para suavizado y SL dinámico)
+input double ATR_Volatility_Multiplier= 1.0;     // Multiplicador de volatilidad para el SL dinámico
+
+// --- Parámetros de Order Blocks (OB) y Niveles Clave ---
+input group " --- Parámetros de Order Blocks (OB) y Niveles Clave ---"
+input int    OB_MinRangePips          = 20;      // Rango mínimo en pips para considerar un Order Block válido
+input bool   UseKeyLevelsForSLTP      = true;    // Usar niveles clave (liquidez) para ajustar TP/SL (lógica no implementada completamente)
+input double KeyLevelTP_MarginPips    = 5.0;     // Margen en pips para TP cerca de niveles clave
+input double ATRBufferFactor          = 1;       // Factor para buffers basados en ATR (ej: SL de OB = ATR * Factor)
+input int    OBEntryMode              = 1;       // Modo de entrada en Order Block: 0=Open, 1=50% cuerpo, 2=Wick (Low/High)
+
+// --- Parámetros de Detección de Liquidez ---
+input group "--- Parámetros de Detección de Liquidez ---"
+input int    SWING_LOOKBACK_LIQUIDITY = 20;      // Lookback en barras para identificar Swing Points (M15/H1/H4)
+input double EQH_EQL_TolerancePips    = 1.0;     // Tolerancia en pips para considerar Equal Highs/Lows
+// Los siguientes inputs de liquidez no se usan activamente con la nueva lógica de AddLiquidityZone pero se mantienen por si se reutilizan
+input group "--- AddLiquidityZone ---"
+input int    CONSEC_BARS_LIQUIDITY    = 3;       // (No usado en lógica actual) Barras consecutivas para EQH/EQL simple
+input double MIN_SIZE_PIPS_LIQUIDITY  = 5;       // (No usado en lógica actual) Tamaño mínimo en pips de una zona de liquidez simple
+input double ATRMultiplierForLiquidity= 1.0;     // (No usado en lógica actual) Multiplicador ATR para detección de liquidez simple
+
+// --- Parámetros de Caza de Liquidez (Stop Hunt) ---
+input group " --- Parámetros de Caza de Liquidez (Stop Hunt) ---"
+input double StopHuntBufferPips       = 3.0;     // Buffer para ajustar SL inicial si está cerca de un nivel de liquidez
+// Los siguientes inputs de Stop Hunt no se usan directamente, se usan versiones dinámicas basadas en ATRMultiplierForMin/MaxPenetration
+input int    MIN_PENETRATION_PIPS      = 3;       // (No usado directamente) Mínima penetración en pips del nivel de liquidez
+input int    MAX_PENETRATION_PIPS      = 15;      // (No usado directamente) Máxima penetración en pips del nivel de liquidez
+input int    REVERSAL_CONFIRMATION_BARS= 2;       // (No usado directamente, BaseMinReversalBars lo reemplaza) Barras de confirmación de reversión post-hunt
+input double REVERSAL_STRENGTH_PERCENT = 50;      // Porcentaje mínimo de reversión sobre la penetración para confirmar el hunt
+
+// --- Parámetros Dinámicos Basados en Volatilidad (Inputs Base para Stop Hunt) ---
+input group "--- Parámetros Dinámicos Basados en Volatilidad (Inputs Base para Stop Hunt)"
+input double ATRMultiplierForMinPenetration = 0.5; // Factor ATR para la *mínima* penetración requerida en un Stop Hunt
+input double ATRMultiplierForMaxPenetration = 2.5; // Factor ATR para la *máxima* penetración permitida en un Stop Hunt
+input int    BaseMinReversalBars        = 2;       // Número base de barras de confirmación para la reversión post-hunt
+input double VolumeDivergenceMultiplier = 1.5;     // Multiplicador para detectar divergencia de volumen en la reversión del hunt
+
+// --- Parámetros de Fair Value Gap (FVG) ---
+input group " --- Parámetros de Fair Value Gap (FVG) ---"
+input int    FVGEntryMode             = ENTRY_MEDIUM; // Modo de entrada en FVG: 0 = Medio (50% del gap), 1 = Agresivo (inicio del gap)
+
+// Nota: ENTRY_MEDIUM y ENTRY_AGGRESSIVE deben estar definidos como enumerados o constantes globales, por ejemplo:
+// enum EntryMode { ENTRY_MEDIUM = 0, ENTRY_AGGRESSIVE = 1 };
+// Si no lo están, puedes reemplazar ENTRY_MEDIUM con 0 directamente en el input.
+
+//+------------------------------------------------------------------+
+//| Declaraciones Adelantadas de Funciones                           |
+//+------------------------------------------------------------------+
+// Funciones de Indicadores y Cálculos Auxiliares
+bool   GetADXValues(string symbol, ENUM_TIMEFRAMES tf, int period, int barShift, double &adxVal, double &plusDiVal, double &minusDiVal);
+double GetEMAValue(string symbol, ENUM_TIMEFRAMES tf, int periodEMA, int barShift=0);
+double ComputeATR(ENUM_TIMEFRAMES tf, int period, int shift = 0); // Función ATR unificada
+double ComputeATR_M15(int period); // Mantenida por compatibilidad
+double ComputeATR_H1(int period);  // Mantenida por compatibilidad
+double ComputeATR_H4(int period);  // Mantenida por compatibilidad
+double ComputeATR_M5(int period);  // Mantenida por compatibilidad
+double AdaptiveVolatility(int period); // <--- Función corregida
+double GetAdaptiveFactor(int atrPeriod, int maPeriod);
+double CalculateDynamicSLBuffer_M15();
+double ComputeATR_M15_Shift(int period, int shift); // *** CORRECCIÓN: Declaración adelantada necesaria ***
+double ComputeVolatilityStdDev(int period);
+double ComputeRelativeRange(int period);
+double ComputeROC(int period);
+double CalculateDynamicVolatilityIndex(int atrPeriod, int stddevPeriod, int rocPeriod);
+MarketRegime DetermineMarketRegime(double volatilityIndex, double highThreshold, double lowThreshold);
+void   AdjustParametersBasedOnVolatility(MarketRegime regime);
+double CalculateLotSize();
+double CalculateSmartStopBuffer(); // Buffer inteligente para SL inicial
+bool   IsVolumeTrendingUp(int barIndex, int lookback=3); // ¿Volumen creciente?
+
+// Funciones de Detección de Elementos ICT
+void   DetectLiquidity(); // Función principal de liquidez (modificada)
+void   DetectFairValueGaps();
+void   DetectOrderBlocks();
+void   DetectBreakerBlocks();
+void   DetectJudasSwing(); // Placeholder
+bool   DetectStopHunt(double level, bool isBuySideLiquidity, int &huntStrength);
+bool   IsLiquidityZoneConfirmedByVolume(double price, bool isBuySide, datetime time);
+void   AddLiquidityZone(double price, bool isBuySide, datetime time, double strength, string type, double tolerancePips = 1.0); // Nueva función auxiliar
+void   UpdateOldHighsLows(); // Nueva función
+void   UpdateSessionHighsLows(); // Nueva función
+
+// Funciones de Estructura de Mercado y Bias
+bool   ComputeH1Bias(); // Devuelve true si H1 es alcista (o H4 si H1 no es claro)
+bool   ComputeM30Bias(); // Placeholder o lógica simple
+void   ComputeH4Bias(); // Actualiza g_H4BiasBullish
+void   ComputeD1Bias(); // Actualiza g_D1BiasBullish
+MarketStructureState DetectMarketStructureM15(int lookbackBars, int pivotStrength); // Wrapper
+MarketStructureState DetectMarketStructureH1(int lookbackBars, int pivotStrength); // Wrapper
+MarketStructureState DetectMarketStructure(ENUM_TIMEFRAMES tf, int lookbackBars, int pivotStrength); // Nueva función unificada
+double CalculateMarketStructureScore(int lookbackBars); // Placeholder o lógica simple
+double CalculateLiquidityZoneWeight(const LiquidityZone &lz); // Placeholder
+bool   IsLiquidityZoneStrong(const LiquidityZone &lz); // Placeholder (podría usar fuerza)
+bool   IsH1BiasAligned(bool isBullishEntry); // Compara entrada con H1/H4 bias
+double CalculateH1MarketScore(int lookbackBars); // Placeholder
+bool   IsMultiTFConfirmation(MarketStructureState m15State, MarketStructureState h1State); // Placeholder
+double CalculateStructureWeight(MarketStructureState state, double score); // Placeholder
+bool   IsSignalQualityAcceptable(double m15Score, double h1Score); // Placeholder
+bool   DetectBOS(ENUM_TIMEFRAMES tf, int barIndex, bool isBullish, int lookback=30); // Función unificada BOS
+bool   DetectChoCH(ENUM_TIMEFRAMES tf, int barIndex, bool isBullish, int lookback=30); // Función unificada ChoCH
+bool   DetectBOS_M15(bool isBullish); // Wrapper M15
+bool   DetectChoCH_M15(bool isBullish); // Wrapper M15
+
+// Funciones de Gestión de Órdenes y Riesgo
+void   CheckTradeEntries(); // Lógica principal de entradas POI
+void   CheckLiquidityHunting(); // Lógica de entradas Stop Hunt
+void   ManageRisk(); // Gestión general (BE, Parciales, llamadas a Trailings)
+bool OpenTradeSimple(bool isLong, double lot, double priceSignalOrigin, double initialStopLoss, string comment);
+void   ManagePartialWithFixedTP_Advanced(); // Lógica de parciales 2R/3R
+void   AdvancedAdaptiveTrailing(ulong ticket, double fixedTakeProfit); // Trailing adaptativo post-parciales
+void   ApplyStopHuntFractalTrailing(ulong ticket, int fractalDepth, double bufferPips, int searchBarsAfterEntry); // Trailing fractal
+void   ManageSLWithStopRunProtection(); // Ajuste defensivo del SL ante hunts
+bool   IsStopLossNearLiquidityLevel(double proposedSL, double proximityRangePips); // Chequeo de SL vs Liquidez
+// *** NUEVO: Funciones auxiliares para volumen inicial ***
+void   StoreInitialVolume(ulong ticket, double volume);
+double GetStoredInitialVolume(ulong ticket);
+void   RemoveStoredVolume(ulong ticket);
+
+// Funciones relacionadas con Order Blocks
+bool   CheckHTFConfluence(OrderBlock &ob); // Placeholder
+bool   IsPremiumPosition(OrderBlock &ob); // Placeholder
+double ComputeATRSlope(int period); // Placeholder
+double AssessOBQuality(OrderBlock &ob); // Evaluar calidad OB
+bool   IsOBSwept(OrderBlock &ob); // Chequear si OB fue mitigado
+void   SortOrderBlocksByQuality(); // Ordenar OBs
+
+// Otras funciones
+bool   IsSignalRefined(bool isBullish); // Placeholder para calidad de vela
+
+//+------------------------------------------------------------------+
+//| Funciones Auxiliares para Indicadores                            |
+//+------------------------------------------------------------------+
+bool GetADXValues(string symbol, ENUM_TIMEFRAMES tf, int period, int barShift, double &adxVal, double &plusDiVal, double &minusDiVal)
+{
+   int adxHandle = iADX(symbol, tf, period);
+   if(adxHandle == INVALID_HANDLE)
+   {
+      Print("Error al crear handle de iADX(", symbol, ", ", EnumToString(tf), "). Code=", GetLastError());
+      return false;
+   }
+   double adxBuffer[], plusDiBuffer[], minusDiBuffer[];
+   if(CopyBuffer(adxHandle, 0, barShift, 1, adxBuffer) <= 0 ||
+      CopyBuffer(adxHandle, 1, barShift, 1, plusDiBuffer) <= 0 ||
+      CopyBuffer(adxHandle, 2, barShift, 1, minusDiBuffer) <= 0)
+   {
+      // No imprimir error si es solo falta de datos calculados
+      // Print("Error CopyBuffer ADX(", symbol, ", ", EnumToString(tf), "): ", GetLastError());
+      return false;
+   }
+   adxVal    = adxBuffer[0];
+   plusDiVal = plusDiBuffer[0];
+   minusDiVal= minusDiBuffer[0];
+   return true;
+}
+
+double GetEMAValue(string symbol, ENUM_TIMEFRAMES tf, int periodEMA, int barShift=0)
+{
+   int maHandle = iMA(symbol, tf, periodEMA, 0, MODE_EMA, PRICE_CLOSE);
+   if(maHandle == INVALID_HANDLE)
+   {
+      Print("Error al crear handle de iMA(", symbol, ", ", EnumToString(tf), "). Code=", GetLastError());
+      return 0.0;
+   }
+   double maBuffer[];
+   if(CopyBuffer(maHandle, 0, barShift, 1, maBuffer) <= 0)
+   {
+      // No imprimir error si es solo falta de datos calculados
+      // Print("Error CopyBuffer EMA(", symbol, ", ", EnumToString(tf), "): ", GetLastError());
+      return 0.0;
+   }
+   return maBuffer[0];
+}
+
+// Función ATR Unificada
+double ComputeATR(ENUM_TIMEFRAMES tf, int period, int shift = 0)
+{
+   // Usar un handle estático para eficiencia
+   static int atrHandles[10]; // Asumir máximo 10 TFs usados
+   static ENUM_TIMEFRAMES atrTFs[10];
+   static int atrPeriods[10];
+   int handleIndex = -1;
+
+   // Buscar handle existente
+   for(int i=0; i<ArraySize(atrHandles); i++)
+   {
+      if(atrHandles[i] != 0 && atrTFs[i] == tf && atrPeriods[i] == period)
+      {
+         handleIndex = i;
+         break;
+      }
+   }
+
+   // Crear handle si no existe
+   if(handleIndex == -1)
+   {
+      for(int i=0; i<ArraySize(atrHandles); i++)
+      {
+         if(atrHandles[i] == 0) // Encontrar slot vacío
+         {
+            atrHandles[i] = iATR(Symbol(), tf, period);
+            if(atrHandles[i] != INVALID_HANDLE)
+            {
+               atrTFs[i] = tf;
+               atrPeriods[i] = period;
+               handleIndex = i;
+            } else {
+                Print("Error creando handle ATR(", Symbol(), ", ", EnumToString(tf), ", ", period, "). Code:", GetLastError());
+                return 0.0; // Error crítico
+            }
+            break;
+         }
+      }
+       if(handleIndex == -1) { Print("No hay slots para handle ATR"); return 0.0;} // Si no hay slots
+   }
+
+
+   double atr_buffer[];
+   if(CopyBuffer(atrHandles[handleIndex], 0, shift, 1, atr_buffer) > 0)
+      return atr_buffer[0];
+   else
+   {
+      // Print("Error al copiar buffer ATR en ", EnumToString(tf), ". Code: ", GetLastError()); // Comentado para reducir spam
+      return 0.0;
+   }
+}
+// Funciones ATR específicas (llaman a la unificada)
+double ComputeATR_M15(int period) { return ComputeATR(PERIOD_M15, period); }
+double ComputeATR_H1(int period)  { return ComputeATR(PERIOD_H1, period); }
+double ComputeATR_H4(int period)  { return ComputeATR(PERIOD_H4, period); }
+double ComputeATR_M5(int period)  { return ComputeATR(PERIOD_M5, period); }
+
+
+//---------------------------------------------------------
+// Función AdaptiveVolatility (CORREGIDA)
+//---------------------------------------------------------
+// Devuelve un factor basado en el régimen de volatilidad actual.
+double AdaptiveVolatility(int period) // El 'period' no se usa aquí actualmente
+{
+   // Usa directamente la variable global g_regime que se actualiza en OnTick
+   if(g_regime == HIGH_VOLATILITY) return 1.2; // Factor para alta volatilidad
+   if(g_regime == LOW_VOLATILITY) return 0.8;  // Factor para baja volatilidad
+   // if(g_regime == RANGE_MARKET) return 1.0; // Factor para rango (implícito en el return final)
+
+   return 1.0; // Valor base por defecto (si es rango o no se pudo determinar)
+}
+
+// Calcula un factor basado en el ATR actual vs su media móvil
+double GetAdaptiveFactor(int atrPeriod, int maPeriod)
+{
+   double currentATR = ComputeATR(PERIOD_M15, atrPeriod, 0); // ATR de la vela actual
+   if(currentATR <= 0) return 1.0; // Evitar división por cero
+
+   double sumATR = 0.0;
+   int barsCalculated = 0;
+   for(int i = 1; i <= maPeriod; i++) // Empezar desde la vela anterior (shift=1)
+   {
+      double pastATR = ComputeATR(PERIOD_M15, atrPeriod, i);
+      if(pastATR > 0)
+      {
+         sumATR += pastATR;
+         barsCalculated++;
+      }
+   }
+
+   if(barsCalculated == 0) return 1.0; // No se pudo calcular la media
+
+   double avgATR = sumATR / barsCalculated;
+   if(avgATR <= 0) return 1.0; // Evitar división por cero
+
+   return currentATR / avgATR; // Ratio ATR actual vs promedio
+}
+
+// Calcula un buffer dinámico para SL basado en ATR suavizado y volatilidad
+double CalculateDynamicSLBuffer_M15()
+{
+   double currentATR = ComputeATR_M15(ATRPeriod_M15);
+   if(currentATR <= 0) return _Point * 100; // Retornar un buffer fijo si ATR falla
+
+   double sumATR = 0.0;
+   int barsCalculated = 0;
+   for(int i = 1; i <= ATR_MA_Period; i++) // Empezar shift=1
+   {
+      // *** CORRECCIÓN: Usar ComputeATR unificada con shift ***
+      double pastATR = ComputeATR(PERIOD_M15, ATRPeriod_M15, i);
+      if(pastATR > 0)
+      {
+         sumATR += pastATR;
+         barsCalculated++;
+      }
+   }
+
+   double atrMA = (barsCalculated > 0) ? (sumATR / barsCalculated) : currentATR; // Usar ATR actual si MA falla
+   double smoothedATR = (currentATR + atrMA) / 2.0; // Media simple entre ATR actual y su MA
+
+   double adaptiveMultiplier = GetAdaptiveFactor(ATRPeriod_M15, ATR_MA_Period); // Factor adaptativo ATR vs MA(ATR)
+   double volatilityRegimeFactor = AdaptiveVolatility(0); // Factor del régimen de volatilidad
+
+   // Buffer final: ATR Suavizado * Factor General * Factor Volatilidad * Factor Adaptativo
+   double dynamicBuffer = smoothedATR * ATRBufferFactor * ATR_Volatility_Multiplier * adaptiveMultiplier * volatilityRegimeFactor;
+
+   // Asegurar un buffer mínimo (ej: 5 pips)
+   double minBufferPips = 5.0;
+   double minBuffer = minBufferPips * _Point * (SymbolInfoInteger(Symbol(), SYMBOL_DIGITS) % 2 == 1 ? 10 : 1); // Ajuste pip
+    if (minBuffer == 0) minBuffer = minBufferPips * 0.0001; // Fallback
+
+   return MathMax(minBuffer, dynamicBuffer);
+}
+
+// Función auxiliar para ComputeATR con shift (si ComputeATR unificada no lo soporta)
+// --> Esta función ya no es estrictamente necesaria si ComputeATR maneja shift, pero la dejamos por si acaso.
+double ComputeATR_M15_Shift(int period, int shift)
+{
+    // Reimplementar cálculo manual si CopyBuffer no funciona bien con shift en iATR
+    double sumTR = 0.0;
+    int calculated_bars = 0;
+    int startBar = shift + 1; // Corrección: shift empieza en 0, así que necesitamos barra 1 para shift 0.
+    int endBar = shift + period;
+    int totalBars = Bars(Symbol(), PERIOD_M15);
+
+    if (endBar >= totalBars) return 0.0; // No hay suficientes datos
+
+    for (int i = startBar; i <= endBar; i++)
+    {
+        if (i + 1 >= totalBars) continue; // Necesitamos i+1 para prevClose
+        double high = iHigh(Symbol(), PERIOD_M15, i);
+        double low = iLow(Symbol(), PERIOD_M15, i);
+        double prevClose = iClose(Symbol(), PERIOD_M15, i + 1);
+        double tr = MathMax(high - low, MathMax(MathAbs(high - prevClose), MathAbs(low - prevClose)));
+        sumTR += tr;
+        calculated_bars++;
+    }
+    if (calculated_bars == 0) return 0.0;
+    return sumTR / calculated_bars;
+}
+
+
+// Calcula Desviación Estándar de precios de cierre (usado en índice de volatilidad)
+double ComputeVolatilityStdDev(int period)
+{
+    if (period <= 1) return 0.0;
+    double priceData[];
+    if(CopyClose(Symbol(), PERIOD_M5, 0, period, priceData) != period) return 0.0; // Usar M5 para volatilidad rápida
+
+    double sum = 0.0;
+    for(int i = 0; i < period; i++) sum += priceData[i];
+    double mean = sum / period;
+    double varianceSum = 0.0;
+    for(int i = 0; i < period; i++) varianceSum += MathPow(priceData[i] - mean, 2);
+    // Usar N-1 para muestra si es necesario, pero N es común para indicadores
+    if (period == 0) return 0.0;
+    return MathSqrt(varianceSum / period);
+}
+
+// Calcula Rango Relativo (rango actual vs promedio, usado en índice de volatilidad)
+double ComputeRelativeRange(int period)
+{
+    if(period <= 0) return 1.0;
+    double currentRange = iHigh(Symbol(), PERIOD_M5, 0) - iLow(Symbol(), PERIOD_M5, 0);
+    if(currentRange <= 0) return 1.0;
+
+    double sumRange = 0.0;
+    int calculatedBars = 0;
+    for(int i = 1; i <= period; i++) // Usar velas anteriores para promedio
+    {
+        double range = iHigh(Symbol(), PERIOD_M5, i) - iLow(Symbol(), PERIOD_M5, i);
+        if(range > 0) {
+            sumRange += range;
+            calculatedBars++;
+        }
+    }
+    if(calculatedBars == 0) return 1.0;
+    double avgRange = sumRange / calculatedBars;
+    if(avgRange <= 0) return 1.0;
+
+    return currentRange / avgRange;
+}
+
+// Calcula Rate of Change (usado en índice de volatilidad)
+double ComputeROC(int period)
+{
+   if(period <= 0) return 0.0;
+   if(iBars(Symbol(), PERIOD_M5) <= period) return 0.0; // Datos insuficientes
+   double currentPrice = iClose(Symbol(), PERIOD_M5, 0);
+   double previousPrice = iClose(Symbol(), PERIOD_M5, period);
+   if(previousPrice == 0) return 0.0; // Evitar división por cero
+
+   return ((currentPrice - previousPrice) / previousPrice) * 100.0;
+}
+
+// Calcula Índice de Volatilidad Combinado
+double CalculateDynamicVolatilityIndex(int atrPeriod, int stddevPeriod, int rocPeriod)
+{
+    // Usar M5 para cálculos de volatilidad rápida
+    double atr = ComputeATR(PERIOD_M5, atrPeriod);
+    double stddev = ComputeVolatilityStdDev(stddevPeriod);
+    double relativeRange = ComputeRelativeRange(atrPeriod); // Usa M5 dentro de la función
+    double roc = ComputeROC(rocPeriod); // Usa M5 dentro de la función
+
+    // Ponderación (ajustable)
+    double atrWeight = 0.4;
+    double stddevWeight = 0.3;
+    double relRangeWeight = 0.15;
+    double rocWeight = 0.15;
+
+    // Normalizar componentes si es necesario (ej: dividir por precio o ATR para comparar)
+    // Aquí se usan valores directos con ponderación simple
+    // Asegurarse que los componentes no sean negativos donde no deben (ej: stddev)
+    double volatilityIndex = (atr * atrWeight) + (MathMax(0, stddev) * stddevWeight) + (relativeRange * relRangeWeight) + (MathAbs(roc) * rocWeight);
+
+    return volatilityIndex;
+}
+
+// Determina el Régimen de Mercado basado en el Índice de Volatilidad
+MarketRegime DetermineMarketRegime(double volatilityIndex, double highThreshold, double lowThreshold)
+{
+    // Los umbrales dependen de la escala del volatilityIndex calculado.
+    // Se necesita calibración con datos históricos o pruebas.
+    // Ejemplo de umbrales (¡NECESITAN AJUSTE!):
+    // double calibratedHighThreshold = highThreshold * ComputeATR(PERIOD_D1, 14); // Escalar con ATR diario?
+    // double calibratedLowThreshold = lowThreshold * ComputeATR(PERIOD_D1, 14);
+    // Usaremos umbrales fijos por ahora (requieren ajuste)
+    if(volatilityIndex > highThreshold) return HIGH_VOLATILITY;
+    if(volatilityIndex < lowThreshold) return LOW_VOLATILITY;
+    return RANGE_MARKET;
+}
+
+// Ajusta Parámetros Dinámicos basado en el Régimen de Mercado
+void AdjustParametersBasedOnVolatility(MarketRegime regime)
+{
+    // Ajustar variables dyn_* globales
+    switch(regime)
+    {
+        case HIGH_VOLATILITY:
+            dyn_ATRMultiplierForMinPenetration = ATRMultiplierForMinPenetration * 1.3; // Más penetración permitida
+            dyn_ATRMultiplierForMaxPenetration = ATRMultiplierForMaxPenetration * 1.3;
+            dyn_BreakEvenPips = BreakEvenPips + 5; // BE más holgado
+            dyn_TrailingDistancePips = TrailingDistancePips + 5; // Trailing más holgado
+            break;
+        case LOW_VOLATILITY:
+            dyn_ATRMultiplierForMinPenetration = ATRMultiplierForMinPenetration * 0.7; // Menos penetración
+            dyn_ATRMultiplierForMaxPenetration = ATRMultiplierForMaxPenetration * 0.7;
+            dyn_BreakEvenPips = MathMax(5, BreakEvenPips - 5); // BE más ajustado (mín 5)
+            dyn_TrailingDistancePips = MathMax(5, TrailingDistancePips - 5); // Trailing más ajustado (mín 5)
+            break;
+        case RANGE_MARKET:
+        default: // Volver a valores base de los inputs
+            dyn_ATRMultiplierForMinPenetration = ATRMultiplierForMinPenetration;
+            dyn_ATRMultiplierForMaxPenetration = ATRMultiplierForMaxPenetration;
+            dyn_BreakEvenPips = BreakEvenPips;
+            dyn_TrailingDistancePips = TrailingDistancePips;
+            break;
+    }
+}
+
+// Verifica si el volumen ha estado creciendo en las últimas barras
+bool IsVolumeTrendingUp(int barIndex, int lookback=3)
+{
+   if(barIndex < lookback || lookback <= 0) return false;
+   // Usar M5 para volumen, como en otras partes
+   if(barIndex + 1 >= iBars(Symbol(), PERIOD_M5)) return false; // Necesitamos barra k+1
+
+   for(int k = barIndex; k > barIndex - lookback; k--)
+   {
+      if(k+1 >= iBars(Symbol(), PERIOD_M5)) return false; // Asegurar k+1 válido
+      // Comparar volumen real (tick_volume)
+      long vol_k = iTickVolume(Symbol(), PERIOD_M5, k);
+      long vol_k1 = iTickVolume(Symbol(), PERIOD_M5, k+1);
+      if(vol_k <= vol_k1)
+         return false; // No estrictamente creciente
+   }
+   return true; // Todas las barras tuvieron volumen mayor que la anterior
+}
+
+
+//+------------------------------------------------------------------+
+//| Funciones de Detección de Elementos ICT                          |
+//+------------------------------------------------------------------+
+
+// Función auxiliar para añadir zonas de liquidez evitando duplicados cercanos
+void AddLiquidityZone(double price, bool isBuySide, datetime time, double strength, string type, double tolerancePips = 1.0)
+{
+    double point = SymbolInfoDouble(Symbol(), SYMBOL_POINT);
+    // Ajustar cálculo de tolerancia: tolerancePips * point da una fracción muy pequeña. Usar point*10 o similar.
+    double tolerance = tolerancePips * (point == 0 ? 0.00001 : point) * (Digits() % 2 == 1 ? 10 : 1); // Tolerancia en precio absoluto (ajustado)
+    if (tolerance <= 0) tolerance = tolerancePips * 0.0001; // Fallback si point es 0
+
+    bool exists = false;
+    int existingIndex = -1;
+    for(int i = ArraySize(liquidityZones) - 1; i >= 0; i--) // Buscar desde el final (más recientes)
+    {
+        // Comprobar si ya existe una zona MUY similar (mismo lado, precio cercano)
+        if(liquidityZones[i].isBuySide == isBuySide && MathAbs(liquidityZones[i].price - price) <= tolerance)
+        {
+            exists = true;
+            existingIndex = i;
+            break; // Encontrada una coincidencia cercana
+        }
+    }
+
+    if(exists) // Si existe, actualizar si la nueva zona es más fuerte o más reciente
+    {
+        if(strength > liquidityZones[existingIndex].strength || (strength == liquidityZones[existingIndex].strength && time > liquidityZones[existingIndex].time))
+        {
+            liquidityZones[existingIndex].price = price;
+            liquidityZones[existingIndex].time = time;
+            liquidityZones[existingIndex].strength = strength;
+            liquidityZones[existingIndex].type = type; // Actualizar tipo también
+        }
+    }
+     else // Si no existe, añadirla
+    {
+        LiquidityZone lz;
+        lz.price = price;
+        lz.isBuySide = isBuySide;
+        lz.time = time;
+        lz.strength = strength;
+        lz.type = type;
+
+        int sz = ArraySize(liquidityZones);
+        ArrayResize(liquidityZones, sz + 1);
+        liquidityZones[sz] = lz;
+    }
+}
+
+// Nueva función para actualizar máximos/mínimos del día/semana/mes anterior
+void UpdateOldHighsLows()
+{
+    datetime now = TimeCurrent(); // Usar tiempo actual como referencia para la zona
+
+    // --- Previous Day High/Low (PDH/PDL) ---
+    double dailyHighs[], dailyLows[];
+    // Pedir 2 barras y usar índice [1] para el día anterior (barra 0 es actual incompleta)
+    if(CopyHigh(Symbol(), PERIOD_D1, 1, 1, dailyHighs) > 0 && dailyHighs[0] != 0)
+         AddLiquidityZone(dailyHighs[0], true, now, 9.5, "PDH"); // Muy alta fuerza
+    if(CopyLow(Symbol(), PERIOD_D1, 1, 1, dailyLows) > 0 && dailyLows[0] != 0)
+         AddLiquidityZone(dailyLows[0], false, now, 9.5, "PDL");
+
+    // --- Previous Week High/Low (PWH/PWL) ---
+    double weeklyHighs[], weeklyLows[];
+    if(CopyHigh(Symbol(), PERIOD_W1, 1, 1, weeklyHighs) > 0 && weeklyHighs[0] != 0)
+         AddLiquidityZone(weeklyHighs[0], true, now, 9.7, "PWH"); // Semanal aún más fuerte
+    if(CopyLow(Symbol(), PERIOD_W1, 1, 1, weeklyLows) > 0 && weeklyLows[0] != 0)
+         AddLiquidityZone(weeklyLows[0], false, now, 9.7, "PWL");
+
+    // --- Previous Month High/Low (PMH/PML) ---
+    double monthlyHighs[], monthlyLows[];
+    if(CopyHigh(Symbol(), PERIOD_MN1, 1, 1, monthlyHighs) > 0 && monthlyHighs[0] != 0)
+         AddLiquidityZone(monthlyHighs[0], true, now, 9.9, "PMH"); // Mensual máxima fuerza
+    if(CopyLow(Symbol(), PERIOD_MN1, 1, 1, monthlyLows) > 0 && monthlyLows[0] != 0)
+         AddLiquidityZone(monthlyLows[0], false, now, 9.9, "PML");
+}
+
+// Nueva función para actualizar máximos/mínimos de sesiones
+void UpdateSessionHighsLows()
+{
+    // Esta función necesita una implementación más robusta para calcular
+    // correctamente los H/L de sesiones pasadas basadas en las horas input.
+    // La lógica actual es un placeholder y solo añade zonas si las variables globales tienen valor.
+    // Aquí se debería buscar hacia atrás en el historial M1/M5 para encontrar los H/L reales
+    // dentro de los rangos horarios definidos por AsiaOpen/Close, LondonOpen/Close, NYOpen/Close.
+    datetime nowTime = TimeCurrent();
+    // Añadir los H/L guardados (si existen) a las zonas - ESTO ES INCORRECTO, necesita cálculo real
+    if(AsiaHigh != 0) AddLiquidityZone(AsiaHigh, true, nowTime, 8.5, "Asia H");
+    if(AsiaLow != 0) AddLiquidityZone(AsiaLow, false, nowTime, 8.5, "Asia L");
+    if(LondonHigh != 0) AddLiquidityZone(LondonHigh, true, nowTime, 9.0, "London H"); // Londres más importante
+    if(LondonLow != 0) AddLiquidityZone(LondonLow, false, nowTime, 9.0, "London L");
+    if(NYHigh != 0) AddLiquidityZone(NYHigh, true, nowTime, 8.8, "NY H"); // NY también importante
+    if(NYLow != 0) AddLiquidityZone(NYLow, false, nowTime, 8.8, "NY L");
+}
+
+
+// Función Principal de Detección de Liquidez (Modificada)
+void DetectLiquidity()
+{
+    ArrayResize(liquidityZones, 0); // Limpiar zonas anteriores
+    const int MAX_LOOKBACK = 200;   // Lookback para swings y EQH/EQL
+    const int SWING_LOOKBACK = SWING_LOOKBACK_LIQUIDITY; // Usar input
+    double point = SymbolInfoDouble(Symbol(), SYMBOL_POINT);
+    double eqTolerance = EQH_EQL_TolerancePips * (point == 0 ? 0.00001 : point) * (Digits() % 2 == 1 ? 10 : 1); // Tolerancia para EQH/EQL (ajustado)
+     if (eqTolerance <= 0) eqTolerance = EQH_EQL_TolerancePips * 0.0001; // Fallback
+
+    // 1. Añadir Old Highs/Lows (PDH/L, PWH/L, PMH/L)
+    UpdateOldHighsLows();
+
+    // 2. Añadir Session Highs/Lows (si están calculados) - Requiere implementación real
+    UpdateSessionHighsLows();
+
+    // 3. Detectar Swings y EQH/EQL en M15, H1, H4
+    ENUM_TIMEFRAMES tfs[] = {PERIOD_M15, PERIOD_H1, PERIOD_H4};
+    int pivotStrength = 2; // Simple fractal de 5 barras
+
+    for(int tf_idx = 0; tf_idx < ArraySize(tfs); tf_idx++)
+    {
+        ENUM_TIMEFRAMES tf = tfs[tf_idx];
+        int totalBars = iBars(Symbol(), tf);
+        if(totalBars < SWING_LOOKBACK + pivotStrength*2 + 1) continue; // Necesitamos barras suficientes
+
+        // Almacenar últimos N swing highs/lows para buscar EQH/EQL
+        SwingPoint recentSwings[];
+        int recentSwingCount = 0;
+        int maxRecentSwings = 15; // Guardar los últimos 15 swings por TF
+
+        for(int i = MathMin(totalBars - pivotStrength -1, MAX_LOOKBACK + pivotStrength) ; i >= pivotStrength; i--) // Buscar swings recientes hasta MAX_LOOKBACK + margen
+        {
+             if(i >= totalBars - pivotStrength) continue; // Evitar índice fuera de rango para i-j
+
+            double currentHigh = iHigh(Symbol(), tf, i);
+            double currentLow = iLow(Symbol(), tf, i);
+            bool isSwingHigh = true, isSwingLow = true;
+
+            for(int j = 1; j <= pivotStrength; j++)
+            {
+                // No necesitamos i+j >= totalBars chequeo por el límite del loop (ya cubierto)
+                 if(i-j < 0) { // Chequeo límite izquierdo
+                    isSwingHigh=false; isSwingLow=false; break;
+                 }
+                if(iHigh(Symbol(), tf, i + j) > currentHigh || iHigh(Symbol(), tf, i - j) > currentHigh) isSwingHigh = false;
+                if(iLow(Symbol(), tf, i + j) < currentLow || iLow(Symbol(), tf, i - j) < currentLow) isSwingLow = false;
+                if (!isSwingHigh && !isSwingLow) break;
+            }
+
+            if(isSwingHigh)
+            {
+                // Añadir zona de swing high
+                AddLiquidityZone(currentHigh, true, iTime(Symbol(), tf, i), 7.0 + tf_idx, "Swing " + EnumToString(tf));
+                // Guardar para EQH/EQL si hay espacio
+                if(recentSwingCount < maxRecentSwings) {
+                   ArrayResize(recentSwings, recentSwingCount + 1);
+                   recentSwings[recentSwingCount].price = currentHigh;
+                   recentSwings[recentSwingCount].isHigh = true;
+                   recentSwings[recentSwingCount].time = iTime(Symbol(), tf, i);
+                   recentSwingCount++;
+                }
+                 i -= pivotStrength; // Saltar barras dentro del fractal
+            }
+            else if(isSwingLow)
+            {
+                 // Añadir zona de swing low
+                AddLiquidityZone(currentLow, false, iTime(Symbol(), tf, i), 7.0 + tf_idx, "Swing " + EnumToString(tf));
+                // Guardar para EQH/EQL si hay espacio
+                 if(recentSwingCount < maxRecentSwings) {
+                   ArrayResize(recentSwings, recentSwingCount + 1);
+                   recentSwings[recentSwingCount].price = currentLow;
+                   recentSwings[recentSwingCount].isHigh = false;
+                   recentSwings[recentSwingCount].time = iTime(Symbol(), tf, i);
+                   recentSwingCount++;
+                 }
+                  i -= pivotStrength; // Saltar barras dentro del fractal
+            }
+        } // Fin loop barras (i)
+
+        // Detectar EQH/EQL dentro de los swings recientes del TF actual
+        for(int i = 0; i < recentSwingCount; i++)
+        {
+            for(int j = i + 1; j < recentSwingCount; j++)
+            {
+                // Mismo tipo (ambos high o ambos low) y precio muy cercano
+                if(recentSwings[i].isHigh == recentSwings[j].isHigh && MathAbs(recentSwings[i].price - recentSwings[j].price) <= eqTolerance)
+                {
+                    // Encontrado EQH/EQL
+                    double eqPrice = (recentSwings[i].price + recentSwings[j].price) / 2.0; // Precio promedio
+                    datetime eqTime = MathMax(recentSwings[i].time, recentSwings[j].time); // Tiempo del más reciente
+                    double eqStrength = 8.5 + tf_idx; // Alta fuerza para EQH/EQL
+                    string eqType = (recentSwings[i].isHigh ? "EQH " : "EQL ") + EnumToString(tf);
+
+                    // Añadir zona EQH/EQL (la función maneja duplicados cercanos)
+                    AddLiquidityZone(eqPrice, recentSwings[i].isHigh, eqTime, eqStrength, eqType, eqTolerance);
+                }
+            }
+        } // Fin loop detección EQH/EQL (j)
+    } // Fin loop timeframes (tf_idx)
+
+    // Opcional: Ordenar el array final por fuerza o precio si es necesario
+    // ...
+
+    // Print("Detectadas ", ArraySize(liquidityZones), " zonas de liquidez finales."); // Opcional
+}
+
+
+void DetectFairValueGaps()
+{
+   ArrayResize(fairValueGaps, 0);
+   int totalM5 = iBars(Symbol(), PERIOD_M5);
+   if(totalM5 < 3) return;
+
+   for(int i = 2; i < MathMin(totalM5, 500); i++) // Limitar lookback a 500 barras M5 para eficiencia
+   {
+      // Vela 0: i-2
+      // Vela 1: i-1
+      // Vela 2: i
+      double c0High = iHigh(Symbol(), PERIOD_M5, i - 2);
+      double c0Low  = iLow(Symbol(), PERIOD_M5, i - 2);
+      // Vela 1 (vela central) no se usa directamente para definir los límites del FVG
+      double c2High = iHigh(Symbol(), PERIOD_M5, i);
+      double c2Low  = iLow(Symbol(), PERIOD_M5, i);
+
+      // Bullish FVG (Gap entre High de vela 0 y Low de vela 2)
+      if(c0High < c2Low)
+      {
+         FairValueGap fvg;
+         fvg.startPrice = c0High;
+         fvg.endPrice = c2Low;
+         fvg.isBullish = true;
+         int sz = ArraySize(fairValueGaps);
+         ArrayResize(fairValueGaps, sz + 1);
+         fairValueGaps[sz] = fvg;
+      }
+      // Bearish FVG (Gap entre Low de vela 0 y High de vela 2)
+      else if(c0Low > c2High) // Usar else if para evitar FVGs de 1 pip si H0==L2 etc.
+      {
+         FairValueGap fvg;
+         fvg.startPrice = c2High; // Bearish FVG va de High vela 2
+         fvg.endPrice = c0Low;   // a Low vela 0
+         fvg.isBullish = false;
+         int sz = ArraySize(fairValueGaps);
+         ArrayResize(fairValueGaps, sz + 1);
+         fairValueGaps[sz] = fvg;
+      }
+   }
+   // Print("Detectados ", ArraySize(fairValueGaps), " Fair Value Gaps (M5)"); // Opcional
+}
+
+
+void DetectOrderBlocks()
+{
+   ArrayResize(orderBlocks, 0);
+   int totalM5 = iBars(Symbol(), PERIOD_M5);
+   if(totalM5 < 10) return; // Necesitamos algunas barras
+
+   bool biasBullish = g_H4BiasBullish; // Usar el bias H4 para filtrar OBs
+   int maxLookback = 100; // Cuántas velas M5 hacia atrás buscar
+   int maxObsToFind = 5; // Máximo número de OBs a guardar
+   int obsFound = 0;
+   double point = SymbolInfoDouble(Symbol(), SYMBOL_POINT);
+   double minRangePoints = OB_MinRangePips * point * (Digits() % 2 == 1 ? 10 : 1);
+   if(minRangePoints <= 0) minRangePoints = OB_MinRangePips * 0.0001; // Fallback
+
+   // Empezar desde la penúltima vela M5 e ir hacia atrás
+   for(int i = totalM5 - 2; i >= MathMax(0, totalM5 - maxLookback) && obsFound < maxObsToFind; i--)
+   {
+       if(i+1 >= totalM5) continue; // Asegurar que i+1 es válido
+
+      double op = iOpen(Symbol(), PERIOD_M5, i);
+      double cl = iClose(Symbol(), PERIOD_M5, i);
+      bool isCandidateOB = false;
+
+      // Si buscamos OB alcista (bias alcista), la vela candidata es bajista
+      if(biasBullish && cl < op) isCandidateOB = true;
+      // Si buscamos OB bajista (bias bajista), la vela candidata es alcista
+      else if(!biasBullish && cl > op) isCandidateOB = true;
+
+      if(isCandidateOB)
+      {
+         // Validar si la vela siguiente tuvo desplazamiento (rompió el High/Low de la candidata)
+         double nextOpen = iOpen(Symbol(), PERIOD_M5, i+1);
+         double nextClose= iClose(Symbol(), PERIOD_M5, i+1);
+         double nextHigh = iHigh(Symbol(), PERIOD_M5, i+1);
+         double nextLow  = iLow(Symbol(), PERIOD_M5, i+1);
+         double candidateHigh = iHigh(Symbol(), PERIOD_M5, i);
+         double candidateLow  = iLow(Symbol(), PERIOD_M5, i);
+
+         bool displacement = false;
+         // Desplazamiento: Vela siguiente cierra significativamente más allá del High/Low del candidato
+         double displacementThreshold = ComputeATR(PERIOD_M5, 14) * 0.5; // Requiere 0.5 ATR de desplazamiento
+         if(biasBullish && nextClose > candidateHigh + displacementThreshold) displacement = true; // Desplazamiento alcista
+         if(!biasBullish && nextClose < candidateLow - displacementThreshold) displacement = true; // Desplazamiento bajista
+
+         if (!displacement) continue; // Ignorar si no hubo desplazamiento claro
+
+         // Si es candidata y hubo desplazamiento, crear y evaluar
+         OrderBlock candidateOB;
+         candidateOB.isBullish = biasBullish; // El OB es del tipo del bias
+         candidateOB.openPrice = op;
+         candidateOB.closePrice = cl;
+         candidateOB.highPrice = candidateHigh;
+         candidateOB.lowPrice = candidateLow;
+         candidateOB.time = iTime(Symbol(), PERIOD_M5, i);
+         candidateOB.isValid = true;
+
+         // Filtro tamaño mínimo
+         if((candidateOB.highPrice - candidateOB.lowPrice) < minRangePoints) candidateOB.isValid = false;
+
+         if(candidateOB.isValid)
+         {
+           // Evaluar calidad y si ha sido mitigado (barrido)
+           candidateOB.isSwept = IsOBSwept(candidateOB);
+           candidateOB.quality = AssessOBQuality(candidateOB); // Calcula calidad
+
+           // Solo añadir OBs válidos, de alta calidad y no barridos
+           if(!candidateOB.isSwept && candidateOB.quality >= 6.5) // Umbral de calidad
+           {
+              int sz = ArraySize(orderBlocks);
+              ArrayResize(orderBlocks, sz + 1);
+              orderBlocks[sz] = candidateOB;
+              obsFound++;
+              // Print("Detectado OB ", (biasBullish ? "Alcista" : "Bajista"), " (M5): ", TimeToString(candidateOB.time), " Precio:", (biasBullish? candidateOB.lowPrice : candidateOB.highPrice), " Calidad:", candidateOB.quality);
+           }
+         }
+      }
+   }
+
+   SortOrderBlocksByQuality(); // Ordenar por calidad descendente
+   // Print("Detectados ", ArraySize(orderBlocks), " Order Blocks (M5) válidos."); // Opcional
+}
+
+void DetectBreakerBlocks()
+{
+    ArrayResize(breakerBlocks, 0);
+    int numOrderBlocks = ArraySize(orderBlocks);
+    if(numOrderBlocks == 0) return;
+
+    double atrM15 = ComputeATR(PERIOD_M15, 14);
+    // double toleranceBase = atrM15 * 0.3; // No usado directamente aquí
+    double qualityThreshold = 6.0; // Umbral de calidad
+
+    // Iterar OBs detectados (ya están ordenados por calidad, podríamos limitar la búsqueda)
+    for(int i = 0; i < numOrderBlocks; i++)
+    {
+        OrderBlock ob = orderBlocks[i];
+        // Un Breaker se forma cuando un OB falla (es penetrado) y luego el precio revierte creando estructura opuesta
+        // Podríamos buscar OBs que SÍ fueron barridos (isSwept = true)
+        if(!ob.isSwept) continue; // Considerar solo OBs barridos como candidatos a Breaker
+
+        int obBarIndexM5 = iBarShift(Symbol(), PERIOD_M5, ob.time, false);
+        if(obBarIndexM5 < 0) continue;
+
+        int lookforwardBars = 20; // Cuántas barras M5 mirar *después* del barrido del OB
+        bool structureShifted = false;
+        bool breakerIsBullish = !ob.isBullish; // El Breaker es opuesto al OB original
+        double breakerPrice = 0.0;
+        datetime breakerTime = 0;
+        int shiftBarIndex = -1; // Índice de la barra que confirma el cambio estructural
+
+        // Buscar desde la barra siguiente al OB hacia el presente
+        for(int j = obBarIndexM5 - 1; j >= MathMax(0, obBarIndexM5 - lookforwardBars); j--)
+        {
+            // Buscar BOS/ChoCH en la dirección OPUESTA al OB original después de la mitigación
+            // Pasar el índice 'j' donde buscar el BOS/ChoCH
+            if(DetectBOS(PERIOD_M5, j, breakerIsBullish, 15) || DetectChoCH(PERIOD_M5, j, breakerIsBullish, 15))
+            {
+                structureShifted = true;
+                shiftBarIndex = j; // Barra que confirma el cambio
+                breakerTime = iTime(Symbol(), PERIOD_M5, j); // Tiempo del cambio estructural
+
+                // El precio del Breaker es el High/Low del OB original que falló
+                breakerPrice = breakerIsBullish ? ob.highPrice : ob.lowPrice;
+                break; // Encontrar el primer cambio estructural post-barrido
+            }
+        }
+
+        if(structureShifted)
+        {
+             // Calcular calidad del Breaker (simplificado aquí)
+             // Podría incluir volumen del rompimiento, FVG creado, etc.
+             double qualityScore = 7.0; // Asignar una calidad base alta a los breakers
+
+             // Validar que el precio actual no haya mitigado ya el Breaker
+             // bool isBreakerMitigated = ... (Lógica de mitigación de Breaker) ...
+
+             if(qualityScore >= qualityThreshold /* && !isBreakerMitigated */)
+             {
+                 BreakerBlock bb;
+                 bb.isBullish = breakerIsBullish;
+                 bb.price = breakerPrice;
+                 bb.obTime = breakerTime; // Guardar tiempo del cambio estructural
+                 int sz = ArraySize(breakerBlocks);
+                 ArrayResize(breakerBlocks, sz + 1);
+                 breakerBlocks[sz] = bb;
+                 // Print("Detectado Breaker Block ", (breakerIsBullish ? "Alcista" : "Bajista"), " Precio:", breakerPrice); // Opcional
+             }
+        }
+    }
+     // Print("Detectados ", ArraySize(breakerBlocks), " Breaker Blocks."); // Opcional
+}
+
+
+void DetectJudasSwing()
+{
+   // Placeholder - Implementación requiere lógica de sesión y barrido de H/L clave.
+}
+
+bool IsLiquidityZoneConfirmedByVolume(double price, bool isBuySide, datetime time)
+{
+    // Implementación básica: verificar si el volumen en las barras cercanas
+    // a la formación de la zona fue significativamente alto.
+    const int VOLUME_LOOKBACK = 5; // Barras a mirar alrededor del tiempo de la zona
+    const double VOL_INCREASE_FACTOR = 1.3; // Volumen debe ser X veces el promedio
+    const int BARS_FOR_AVG_VOLUME = 20; // Período para calcular el volumen promedio
+
+    int timeBarIndexM5 = iBarShift(Symbol(), PERIOD_M5, time, false);
+    if(timeBarIndexM5 < 0 || timeBarIndexM5 >= iBars(Symbol(), PERIOD_M5)) return false;
+
+    // Calcular volumen promedio anterior
+    double avgVolume = 0;
+    long tickVolSum = 0;
+    int validBars = 0;
+    for(int i = timeBarIndexM5 + 1; i <= MathMin(iBars(Symbol(), PERIOD_M5) - 1, timeBarIndexM5 + BARS_FOR_AVG_VOLUME); i++)
+    {
+        tickVolSum += iTickVolume(Symbol(), PERIOD_M5, i);
+        validBars++;
+    }
+    if(validBars == 0) return false;
+    avgVolume = (double)tickVolSum / validBars;
+    if(avgVolume <= 0) return false;
+
+    // Verificar volumen en las barras cercanas a la formación de la zona
+    for(int i = MathMax(0, timeBarIndexM5 - VOLUME_LOOKBACK / 2); i <= MathMin(iBars(Symbol(), PERIOD_M5) - 1, timeBarIndexM5 + VOLUME_LOOKBACK / 2); i++)
+    {
+        double barVolume = (double)iTickVolume(Symbol(), PERIOD_M5, i);
+        if(barVolume > avgVolume * VOL_INCREASE_FACTOR)
+        {
+             // Opcional: Verificar si la barra tocó la zona de precio
+             // double barLow = iLow(Symbol(), PERIOD_M5, i);
+             // double barHigh = iHigh(Symbol(), PERIOD_M5, i);
+             // if(price >= barLow && price <= barHigh) return true;
+            return true; // Volumen alto encontrado cerca de la zona
+        }
+    }
+
+    return false;
+}
+
+bool IsStopLossNearLiquidityLevel(double proposedSL, double proximityRangePips)
+{
+    if(ArraySize(liquidityZones) == 0 || proximityRangePips <= 0) return false;
+    double point = SymbolInfoDouble(Symbol(), SYMBOL_POINT);
+    double proximityRange = proximityRangePips * (point == 0 ? 0.00001 : point) * (Digits() % 2 == 1 ? 10 : 1); // Tolerancia en precio (ajustado)
+    if (proximityRange <= 0) proximityRange = proximityRangePips * 0.0001; // Fallback
+
+    for(int i = 0; i < ArraySize(liquidityZones); i++)
+    {
+        // Considerar solo zonas de liquidez fuertes (ej: fuerza > 7.5)
+        if(liquidityZones[i].strength >= 7.5)
+        {
+            double dist = MathAbs(liquidityZones[i].price - proposedSL);
+            if(dist <= proximityRange)
+            {
+                // Print("Advertencia: SL propuesto (", proposedSL, ") cerca de zona de liquidez (", liquidityZones[i].price, ", Tipo: ", liquidityZones[i].type, ")"); // Opcional
+                return true;
+            }
+        }
+    }
+    return false;
+}
+
+bool DetectStopHunt(double level, bool isBuySideLiquidity, int &huntStrength)
+{
+    // isBuySideLiquidity: true si 'level' es un nivel de liquidez de compra (un máximo)
+    //                   false si 'level' es liquidez de venta (un mínimo)
+
+    double atrM5 = ComputeATR(PERIOD_M5, 14);
+    if(atrM5 <= 0) return false;
+
+    // Usar parámetros dinámicos ajustados por volatilidad
+    double minPenetrationPoints = atrM5 * dyn_ATRMultiplierForMinPenetration;
+    double maxPenetrationPoints = atrM5 * dyn_ATRMultiplierForMaxPenetration;
+    int dynamicReversalBars = BaseMinReversalBars + (g_regime == HIGH_VOLATILITY ? 1 : 0);
+
+    huntStrength = 0;
+    int lookbackBars = 30; // Aumentar lookback para buscar penetración
+    int penetrationBar = -1; // Índice de la barra M5 que penetró el nivel
+    double penetrationPrice = 0; // Precio exacto de la penetración (High o Low)
+    double penetrationDepth = 0; // Cuánto penetró más allá del nivel (en puntos)
+
+    for(int i = 1; i < lookbackBars && i < iBars(Symbol(), PERIOD_M5); i++) // Empezar desde la vela anterior (shift=1)
+    {
+        if(isBuySideLiquidity) // Buscamos ruptura del HIGH
+        {
+            double high = iHigh(Symbol(), PERIOD_M5, i);
+            // Penetración: high > level Y high no excede level + maxPenetration
+            if(high > level && high <= level + maxPenetrationPoints)
+            {
+                if(penetrationBar == -1 || high > penetrationPrice) // Guardar la penetración más alta
+                {
+                   penetrationBar = i;
+                   penetrationPrice = high;
+                   penetrationDepth = high - level;
+                }
+            }
+        }
+        else // Buscamos ruptura del LOW
+        {
+            double low = iLow(Symbol(), PERIOD_M5, i);
+            // Penetración: low < level Y low no excede level - maxPenetration
+            if(low < level && low >= level - maxPenetrationPoints)
+            {
+                 if(penetrationBar == -1 || low < penetrationPrice) // Guardar la penetración más baja
+                 {
+                     penetrationBar = i;
+                     penetrationPrice = low;
+                     penetrationDepth = level - low;
+                 }
+            }
+        }
+        // Si encontramos una penetración válida mínima, podríamos dejar de buscar más atrás
+        // if (penetrationBar != -1 && penetrationDepth >= minPenetrationPoints) break;
+    }
+
+    // Validar si se encontró una penetración y si fue suficiente
+    if(penetrationBar == -1 || penetrationDepth < minPenetrationPoints) return false;
+
+    // --- Confirmación de Reversión ---
+    // Verificar si las velas *después* de la penetración (índices < penetrationBar) cerraron de vuelta al otro lado del nivel
+    bool reversalConfirmed = false;
+    double reversalMagnitude = 0; // Cuánto revirtió el precio desde el extremo de la penetración
+    int barsChecked = 0;
+    for (int k = penetrationBar - 1; k >= MathMax(0, penetrationBar - dynamicReversalBars - 1); k--) // Mirar las siguientes N barras
+    {
+        barsChecked++;
+        double closeK = iClose(Symbol(), PERIOD_M5, k);
+
+        if(isBuySideLiquidity) // Penetró HIGH, buscamos cierre ABAJO del nivel
+        {
+            if(closeK < level)
+            {
+               // Calcular magnitud desde el High de la penetración hasta el Low más bajo de la reversión
+               double lowestLowAfter = iLow(Symbol(), PERIOD_M5, k);
+               // Buscar el low más bajo desde k hasta la barra ANTERIOR a la penetración (exclusive)
+               for(int l=k+1; l < penetrationBar; l++) lowestLowAfter = MathMin(lowestLowAfter, iLow(Symbol(), PERIOD_M5,l));
+               // NO incluir barra de penetración en el low de la reversión
+
+               reversalMagnitude = penetrationPrice - lowestLowAfter;
+               if (penetrationDepth > 0 && (reversalMagnitude / penetrationDepth * 100.0) >= REVERSAL_STRENGTH_PERCENT) {
+                  reversalConfirmed = true;
+                  break; // Reversión confirmada
+               }
+            }
+        }
+        else // Penetró LOW, buscamos cierre ARRIBA del nivel
+        {
+            if(closeK > level)
+            {
+                // Calcular magnitud desde el Low de la penetración hasta el High más alto de la reversión
+               double highestHighAfter = iHigh(Symbol(), PERIOD_M5, k);
+               for(int l=k+1; l < penetrationBar; l++) highestHighAfter = MathMax(highestHighAfter, iHigh(Symbol(), PERIOD_M5,l));
+
+               reversalMagnitude = highestHighAfter - penetrationPrice;
+               if (penetrationDepth > 0 && (reversalMagnitude / penetrationDepth * 100.0) >= REVERSAL_STRENGTH_PERCENT) {
+                  reversalConfirmed = true;
+                  break; // Reversión confirmada
+               }
+            }
+        }
+        if (barsChecked >= dynamicReversalBars) break; // No buscar más allá de las barras de confirmación
+    }
+
+
+    if(reversalConfirmed)
+    {
+        // Calcular Fuerza del Hunt (simplificado)
+        huntStrength = 5; // Base
+        if (reversalMagnitude > atrM5 * 1.5) huntStrength += 2; // Reversión fuerte
+
+        // Volumen: Comprobar si el volumen aumentó en la reversión comparado con la penetración
+        long penetrationVol = iTickVolume(Symbol(), PERIOD_M5, penetrationBar);
+        double avgReversalVol = 0;
+        long reversalVolSum = 0;
+        int volCount = 0;
+        for(int k=penetrationBar-1; k >= MathMax(0, penetrationBar - dynamicReversalBars -1); k--) // Barras post-penetración
+        {
+           reversalVolSum += iTickVolume(Symbol(), PERIOD_M5, k);
+           volCount++;
+        }
+        if(volCount>0) avgReversalVol = (double)reversalVolSum / volCount;
+
+        if(penetrationVol > 0 && avgReversalVol > penetrationVol * VolumeDivergenceMultiplier) huntStrength += 3; // Divergencia de volumen fuerte
+
+        huntStrength = MathMin(huntStrength, 10);
+        // Print("Stop Hunt Detectado: Nivel=", level, " Liquidez=", (isBuySideLiquidity?"Compra":"Venta"), " Fuerza=", huntStrength); // Opcional
+    }
+
+    return reversalConfirmed;
+}
+
+
+//+------------------------------------------------------------------+
+//| Funciones de Estructura de Mercado y Bias                        |
+//+------------------------------------------------------------------+
+
+// Función Unificada para Detectar Estructura (BOS/ChoCH) -> Lógica Secuencia Swings
+MarketStructureState DetectMarketStructure(ENUM_TIMEFRAMES tf, int lookbackBars, int pivotStrength)
+{
+    int totalBars = iBars(Symbol(), tf);
+    if(totalBars < lookbackBars + pivotStrength + 2) return MSS_UNKNOWN;
+
+    SwingPoint swings[];
+    ArrayResize(swings, 0);
+    int swingsToFind = 10; // Buscar más swings para análisis más robusto
+
+    // 1. Encontrar Swing Points (Fractales)
+    for(int i = MathMin(totalBars - pivotStrength - 1, lookbackBars + pivotStrength) ; i >= pivotStrength && ArraySize(swings) < swingsToFind ; i--)
+    {
+        if(i >= totalBars - pivotStrength || i < pivotStrength) continue; // Asegurar índices válidos para j
+
+        double currentHigh = iHigh(Symbol(), tf, i);
+        double currentLow = iLow(Symbol(), tf, i);
+        bool isSwingHigh = true, isSwingLow = true;
+
+        for(int j = 1; j <= pivotStrength; j++)
+        {
+             if(iHigh(Symbol(), tf, i + j) >= currentHigh || iHigh(Symbol(), tf, i - j) >= currentHigh) isSwingHigh = false; // Usar >= para evitar EQH como swing
+             if(iLow(Symbol(), tf, i + j) <= currentLow || iLow(Symbol(), tf, i - j) <= currentLow) isSwingLow = false;    // Usar <= para evitar EQL como swing
+             if(!isSwingHigh && !isSwingLow) break;
+        }
+
+        if(isSwingHigh)
+        {
+           int sz = ArraySize(swings);
+           ArrayResize(swings, sz+1);
+           swings[sz].time = iTime(Symbol(), tf, i);
+           swings[sz].price = currentHigh;
+           swings[sz].isHigh = true;
+           i = i - pivotStrength; // Saltar barras dentro del fractal encontrado
+        }
+        else if(isSwingLow)
+        {
+           int sz = ArraySize(swings);
+           ArrayResize(swings, sz+1);
+           swings[sz].time = iTime(Symbol(), tf, i);
+           swings[sz].price = currentLow;
+           swings[sz].isHigh = false;
+           i = i - pivotStrength; // Saltar barras dentro del fractal encontrado
+        }
+    }
+
+    if(ArraySize(swings) < 4) return MSS_UNKNOWN; // Necesitamos al menos 4 puntos para definir tendencia
+
+    // Ordenar swings por tiempo (más RECIENTE primero) - Bubble sort simple
+    for(int i = 0; i < ArraySize(swings)-1; i++)
+    {
+       for(int j = 0; j < ArraySize(swings)-1-i; j++)
+       {
+          if(swings[j].time < swings[j+1].time) // Cambiado a < para más reciente primero
+          {
+             SwingPoint tmp = swings[j];
+             swings[j] = swings[j+1];
+             swings[j+1] = tmp;
+          }
+       }
+    }
+
+    // 2. Analizar la secuencia de los últimos 4 swings (más recientes)
+    SwingPoint p4 = swings[0]; // Más reciente
+    SwingPoint p3 = swings[1];
+    SwingPoint p2 = swings[2];
+    SwingPoint p1 = swings[3]; // Más antiguo de los 4
+
+    // Verificar secuencia alternante H-L-H-L o L-H-L-H
+    if(p4.isHigh == p2.isHigh || p3.isHigh == p1.isHigh || p4.isHigh == p3.isHigh) return MSS_RANGE; // No alternante -> Rango/Indefinido
+
+    // Tendencia Alcista: Higher Highs (HH) y Higher Lows (HL)
+    // p4(H) > p2(H) AND p3(L) > p1(L)
+    if(p4.isHigh && !p3.isHigh) // Último es High, anterior Low (H-L-H-L)
+    {
+       if(p4.price > p2.price && p3.price > p1.price) return MSS_BULLISH;
+       // Cambio estructural potencial (ChoCH bajista implícito: p4(H) > p2(H) pero p3(L) < p1(L) o p4(H) < p2(H))
+       if(p4.price < p2.price || p3.price < p1.price) return MSS_BEARISH; // O al menos cambio hacia rango/bajista
+    }
+    // Tendencia Bajista: Lower Highs (LH) y Lower Lows (LL)
+    // p3(H) < p1(H) AND p4(L) < p2(L)
+    else if(!p4.isHigh && p3.isHigh) // Último es Low, anterior High (L-H-L-H)
+    {
+       if(p3.price < p1.price && p4.price < p2.price) return MSS_BEARISH;
+       // Cambio estructural potencial (ChoCH alcista implícito: p3(H) < p1(H) pero p4(L) > p2(L) o p3(H) > p1(H))
+       if(p3.price > p1.price || p4.price > p2.price) return MSS_BULLISH; // O al menos cambio hacia rango/alcista
+    }
+
+    // Si no cumple patrones claros de tendencia o cambio, considerar rango
+    return MSS_RANGE;
+}
+
+// Funciones wrapper para M15 y H1
+MarketStructureState DetectMarketStructureM15(int lookbackBars, int pivotStrength) { return DetectMarketStructure(PERIOD_M15, lookbackBars, pivotStrength); }
+MarketStructureState DetectMarketStructureH1(int lookbackBars, int pivotStrength) { return DetectMarketStructure(PERIOD_H1, lookbackBars, pivotStrength); }
+
+
+// Función Unificada para BOS - Reimplementada para claridad
+bool DetectBOS(ENUM_TIMEFRAMES tf, int barIndex, bool isBullish, int lookback=30)
+{
+    int totalBars = Bars(Symbol(), tf);
+    if (barIndex < 0 || barIndex >= totalBars) return false; // barIndex debe ser válido
+
+    // 1. Encontrar el último swing relevante OPUESTO al BOS esperado, ANTERIOR a barIndex
+    int lastOppositeSwingIdx = -1;
+    double lastOppositeSwingPrice = 0;
+    int pivotStrength = 2; // Fractal 5 barras
+
+    // Buscar hacia atrás desde barIndex + 1
+    for(int i = barIndex + 1; i <= barIndex + lookback; i++)
+    {
+         if (i >= totalBars - pivotStrength || i < pivotStrength) break; // Asegurar espacio para fractal
+
+         bool isSwing = true;
+         double price = !isBullish ? iHigh(Symbol(), tf, i) : iLow(Symbol(), tf, i); // Swing opuesto
+
+         for(int j=1; j<=pivotStrength; j++){
+            // Check i+j and i-j validity implicitly covered by outer loop bounds check
+            if(!isBullish && (iHigh(Symbol(), tf, i+j) > price || iHigh(Symbol(), tf, i-j) > price)) {isSwing = false; break;}
+            if(isBullish && (iLow(Symbol(), tf, i+j) < price || iLow(Symbol(), tf, i-j) < price)) {isSwing = false; break;}
+         }
+         if (isSwing) {
+             lastOppositeSwingIdx = i;
+             lastOppositeSwingPrice = price;
+             break; // Encontrar el más reciente anterior a barIndex
+         }
+    }
+    if (lastOppositeSwingIdx == -1) return false; // No se encontró swing opuesto
+
+    // 2. Encontrar el swing del MISMO tipo que el BOS, ANTERIOR al swing opuesto encontrado
+    int relevantSwingIdx = -1;
+    double relevantSwingPrice = 0;
+    for(int i = lastOppositeSwingIdx + 1; i <= lastOppositeSwingIdx + lookback; i++) // Buscar más atrás
+    {
+         if (i >= totalBars - pivotStrength || i < pivotStrength) break;
+
+         bool isSwing = true;
+         double price = isBullish ? iHigh(Symbol(), tf, i) : iLow(Symbol(), tf, i); // Mismo tipo que BOS
+
+         for(int j=1; j<=pivotStrength; j++){
+            if(isBullish && (iHigh(Symbol(), tf, i+j) > price || iHigh(Symbol(), tf, i-j) > price)) {isSwing = false; break;}
+            if(!isBullish && (iLow(Symbol(), tf, i+j) < price || iLow(Symbol(), tf, i-j) < price)) {isSwing = false; break;}
+         }
+         if (isSwing) {
+             relevantSwingIdx = i;
+             relevantSwingPrice = price;
+             break; // Encontrar el más reciente anterior al opuesto
+         }
+    }
+    if (relevantSwingIdx == -1) return false; // No se encontró swing del mismo tipo
+
+    // 3. Verificar si la vela en barIndex rompió el swing relevante del mismo tipo (relevantSwingPrice)
+    if (isBullish)
+        return iHigh(Symbol(), tf, barIndex) > relevantSwingPrice; // Rompimiento del High
+    else
+        return iLow(Symbol(), tf, barIndex) < relevantSwingPrice; // Rompimiento del Low
+}
+
+// Función Unificada para ChoCH - Reimplementada para claridad
+bool DetectChoCH(ENUM_TIMEFRAMES tf, int barIndex, bool isBullish, int lookback=30)
+{
+     int totalBars = Bars(Symbol(), tf);
+     if (barIndex < 0 || barIndex >= totalBars) return false;
+
+    // 1. Encontrar el último swing relevante del MISMO tipo que el ChoCH esperado, ANTERIOR a barIndex
+    int lastSameTypeSwingIdx = -1;
+    double lastSameTypeSwingPrice = 0;
+    int pivotStrength = 2;
+
+    // Buscar hacia atrás desde barIndex + 1
+    for(int i = barIndex + 1; i <= barIndex + lookback; i++)
+    {
+         if (i >= totalBars - pivotStrength || i < pivotStrength) break;
+
+         bool isSwing = true;
+         double price = isBullish ? iHigh(Symbol(), tf, i) : iLow(Symbol(), tf, i); // Mismo tipo
+
+         for(int j=1; j<=pivotStrength; j++){
+             if(isBullish && (iHigh(Symbol(), tf, i+j) > price || iHigh(Symbol(), tf, i-j) > price)) {isSwing = false; break;}
+             if(!isBullish && (iLow(Symbol(), tf, i+j) < price || iLow(Symbol(), tf, i-j) < price)) {isSwing = false; break;}
+         }
+         if (isSwing) {
+             lastSameTypeSwingIdx = i;
+             lastSameTypeSwingPrice = price;
+             break; // Encontrar el más reciente anterior a barIndex
+         }
+    }
+    if (lastSameTypeSwingIdx == -1) return false; // No se encontró swing del mismo tipo
+
+    // 2. Encontrar el swing OPUESTO, ANTERIOR al swing del mismo tipo encontrado
+    int relevantOppositeSwingIdx = -1;
+    double relevantOppositeSwingPrice = 0;
+    for(int i = lastSameTypeSwingIdx + 1; i <= lastSameTypeSwingIdx + lookback; i++) // Buscar más atrás
+    {
+         if (i >= totalBars - pivotStrength || i < pivotStrength) break;
+
+         bool isSwing = true;
+         double price = !isBullish ? iHigh(Symbol(), tf, i) : iLow(Symbol(), tf, i); // Tipo opuesto
+
+         for(int j=1; j<=pivotStrength; j++){
+             if(!isBullish && (iHigh(Symbol(), tf, i+j) > price || iHigh(Symbol(), tf, i-j) > price)) {isSwing = false; break;}
+             if(isBullish && (iLow(Symbol(), tf, i+j) < price || iLow(Symbol(), tf, i-j) < price)) {isSwing = false; break;}
+         }
+         if (isSwing) {
+             relevantOppositeSwingIdx = i;
+             relevantOppositeSwingPrice = price;
+             break; // Encontrar el más reciente anterior al del mismo tipo
+         }
+    }
+     if (relevantOppositeSwingIdx == -1) return false; // No se encontró swing opuesto
+
+    // 3. Verificar si la vela en barIndex rompió el swing opuesto relevante (relevantOppositeSwingPrice)
+    if (isBullish) // ChoCH Alcista rompe el último LH relevante
+        return iHigh(Symbol(), tf, barIndex) > relevantOppositeSwingPrice;
+    else          // ChoCH Bajista rompe el último HL relevante
+        return iLow(Symbol(), tf, barIndex) < relevantOppositeSwingPrice;
+}
+
+// Wrappers M15
+bool DetectBOS_M15(bool isBullish) { return DetectBOS(PERIOD_M15, 1, isBullish); } // Detectar en la vela cerrada anterior
+bool DetectChoCH_M15(bool isBullish) { return DetectChoCH(PERIOD_M15, 1, isBullish); }
+
+
+// Funciones de Bias
+void ComputeH4Bias()
+{
+   int adxPeriod = 14; // Podría hacerse dinámico GetDynamicADXPeriod();
+   double adxVal, plusDiVal, minusDiVal;
+   // Usar vela cerrada (shift=1) para evitar cambios intra-vela
+   if(!GetADXValues(Symbol(), PERIOD_H4, adxPeriod, 1, adxVal, plusDiVal, minusDiVal))
+   {
+      // Mantener el sesgo anterior si falla la lectura
+      // Print("Fallo ADX en H4. Mantengo sesgo anterior."); // Opcional
+      return;
+   }
+
+   double ema20 = GetEMAValue(Symbol(), PERIOD_H4, 20, 1); // Vela cerrada
+   double ema50 = GetEMAValue(Symbol(), PERIOD_H4, 50, 1); // Vela cerrada
+   if (ema20 == 0.0 || ema50 == 0.0) return; // No calcular si EMAs fallan
+   double closePrice = iClose(Symbol(), PERIOD_H4, 1); // Vela cerrada
+
+   // Condiciones más estrictas: Necesita tendencia y alineación de EMAs/DI
+   bool strongTrend = (adxVal >= 23.0); // Umbral ADX un poco más alto
+   bool diBullish   = (plusDiVal > minusDiVal + 2); // DI+ claramente por encima de DI-
+   bool diBearish   = (minusDiVal > plusDiVal + 2); // DI- claramente por encima de DI+
+   bool emaBullish  = (closePrice > ema20 && ema20 > ema50);
+   bool emaBearish  = (closePrice < ema20 && ema20 < ema50);
+
+   // Determinar sesgo
+   if(strongTrend && diBullish && emaBullish) g_H4BiasBullish = true;
+   else if(strongTrend && diBearish && emaBearish) g_H4BiasBullish = false;
+   // else: Si no hay tendencia fuerte o hay señales mixtas, MANTENER el sesgo H4 anterior.
+   // Print("Sesgo H4: ", g_H4BiasBullish ? "BULLISH" : "BEARISH"); // Opcional
+}
+
+
+void ComputeD1Bias()
+{
+    int adxPeriod = 14;
+    double adxVal, plusDiVal, minusDiVal;
+    if(!GetADXValues(Symbol(), PERIOD_D1, adxPeriod, 1, adxVal, plusDiVal, minusDiVal)) // Vela cerrada
+    {
+        // Mantener sesgo anterior si falla
+        return;
+    }
+
+    double ema20 = GetEMAValue(Symbol(), PERIOD_D1, 20, 1); // Vela cerrada
+    double ema50 = GetEMAValue(Symbol(), PERIOD_D1, 50, 1); // Vela cerrada
+    if (ema20 == 0.0 || ema50 == 0.0) return;
+    double closePrice = iClose(Symbol(), PERIOD_D1, 1); // Vela cerrada
+
+    bool strongTrend = (adxVal >= 23.0);
+    bool diBullish   = (plusDiVal > minusDiVal + 2);
+    bool diBearish   = (minusDiVal > plusDiVal + 2);
+    bool emaBullish  = (closePrice > ema20 && ema20 > ema50);
+    bool emaBearish  = (closePrice < ema20 && ema20 < ema50);
+
+    if(strongTrend && diBullish && emaBullish) g_D1BiasBullish = true;
+    else if(strongTrend && diBearish && emaBearish) g_D1BiasBullish = false;
+    // else: Mantener sesgo D1 anterior si no hay claridad
+
+    // Print("Sesgo D1: ", g_D1BiasBullish ? "BULLISH" : "BEARISH"); // Opcional
+}
+
+bool ComputeH1Bias() // Similar a H4 pero en H1
+{
+    int adxPeriod = 14;
+    double adxVal, plusDiVal, minusDiVal;
+    if(!GetADXValues(Symbol(), PERIOD_H1, adxPeriod, 1, adxVal, plusDiVal, minusDiVal))
+    {
+        // Print("Fallo ADX en H1. Usando sesgo H4."); // Opcional
+        return g_H4BiasBullish; // Devolver sesgo H4 si H1 falla
+    }
+
+    double ema20 = GetEMAValue(Symbol(), PERIOD_H1, 20, 1);
+    double ema50 = GetEMAValue(Symbol(), PERIOD_H1, 50, 1);
+    if (ema20 == 0.0 || ema50 == 0.0) return g_H4BiasBullish; // Fallback a H4 si EMAs fallan
+    double closePrice = iClose(Symbol(), PERIOD_H1, 1);
+
+    bool strongTrend = (adxVal >= 23.0);
+    bool diBullish   = (plusDiVal > minusDiVal + 2);
+    bool diBearish   = (minusDiVal > plusDiVal + 2);
+    bool emaBullish  = (closePrice > ema20 && ema20 > ema50);
+    bool emaBearish  = (closePrice < ema20 && ema20 < ema50);
+
+    if(strongTrend && diBullish && emaBullish) return true;  // H1 Bullish
+    else if(strongTrend && diBearish && emaBearish) return false; // H1 Bearish
+    else return g_H4BiasBullish; // Si H1 no es claro, usar sesgo H4
+}
+
+// Comprueba si la entrada propuesta coincide con H1 (o H4 si H1 no es claro)
+bool IsH1BiasAligned(bool isBullishEntry)
+{
+    bool h1BiasIsBullish = ComputeH1Bias(); // Obtiene el sesgo H1 (o H4 si H1 falla)
+    return (isBullishEntry == h1BiasIsBullish);
+}
+
+bool ComputeM30Bias()
+{
+    // Placeholder o implementación simple
+    double close = iClose(Symbol(), PERIOD_M30, 1);
+    double ema = GetEMAValue(Symbol(), PERIOD_M30, 20, 1);
+    if (ema == 0) return g_H4BiasBullish; // Fallback
+    return (close > ema);
+}
+
+//+------------------------------------------------------------------+
+//| Funciones de Gestión de Órdenes y Riesgo                         |
+//+------------------------------------------------------------------+
+
+// *** NUEVO: Almacenamiento de Volumen Inicial ***
+// Buscar índice de un ticket en el array global
+int FindTicketIndex(ulong ticket) {
+    for(int i = 0; i < ArraySize(g_positionTickets); i++) {
+        if(g_positionTickets[i] == ticket) return i;
+    }
+    return -1; // No encontrado
+}
+
+// Almacenar volumen inicial para un ticket
+void StoreInitialVolume(ulong ticket, double volume) {
+    int index = FindTicketIndex(ticket);
+    if(index == -1) { // Si no existe, añadir
+        int size = ArraySize(g_positionTickets);
+        ArrayResize(g_positionTickets, size + 1);
+        ArrayResize(g_initialVolumes, size + 1);
+        g_positionTickets[size] = ticket;
+        g_initialVolumes[size] = volume;
+        //Print("Volumen inicial ", volume, " almacenado para ticket ", ticket); // Debug
+    } else { // Si ya existe (poco probable, pero por si acaso), actualizar
+        g_initialVolumes[index] = volume;
+         //Print("Volumen inicial ", volume, " actualizado para ticket ", ticket); // Debug
+    }
+}
+
+// Obtener volumen inicial para un ticket
+double GetStoredInitialVolume(ulong ticket) {
+    int index = FindTicketIndex(ticket);
+    if(index != -1) {
+        return g_initialVolumes[index];
+    }
+    //Print("Advertencia: No se encontró volumen inicial para ticket ", ticket); // Debug
+    return 0.0; // Retornar 0 si no se encuentra
+}
+
+// Eliminar un ticket y su volumen del almacenamiento (cuando la posición se cierra)
+void RemoveStoredVolume(ulong ticket) {
+    int index = FindTicketIndex(ticket);
+    if(index != -1) {
+        int lastIdx = ArraySize(g_positionTickets) - 1;
+        // Mover el último elemento a la posición del eliminado (si no es el último)
+        if (index != lastIdx) {
+             g_positionTickets[index] = g_positionTickets[lastIdx];
+             g_initialVolumes[index] = g_initialVolumes[lastIdx];
+        }
+        // Reducir tamaño de los arrays
+        ArrayResize(g_positionTickets, lastIdx);
+        ArrayResize(g_initialVolumes, lastIdx);
+         //Print("Volumen almacenado eliminado para ticket ", ticket); // Debug
+    }
+}
+// *** FIN Almacenamiento de Volumen Inicial ***
+
+
+double CalculateLotSize()
+{
+   string sym = Symbol();
+   double balance = AccountInfoDouble(ACCOUNT_BALANCE);
+   if(balance <= 0) return SymbolInfoDouble(sym, SYMBOL_VOLUME_MIN); // Salir si no hay balance
+
+   double riskPercent = 0.5; // 0.5% de riesgo por trade (ajustable)
+   double maxRiskAmount = (riskPercent / 100.0) * balance;
+
+   // Usar StopLossPips del input como base para el cálculo
+   double slPipsValue = (StopLossPips < 5) ? 5.0 : (double)StopLossPips; // SL mínimo de 5 pips
+   if (slPipsValue <= 0) slPipsValue = 10.0; // Fallback si input es inválido
+
+   double point = SymbolInfoDouble(sym, SYMBOL_POINT);
+   if(point <= 0) return SymbolInfoDouble(sym, SYMBOL_VOLUME_MIN); // Salir si falla point
+
+   // Intentar obtener Tick Value y Size directamente
+   double tickValue = SymbolInfoDouble(sym, SYMBOL_TRADE_TICK_VALUE);
+   double tickSize = SymbolInfoDouble(sym, SYMBOL_TRADE_TICK_SIZE);
+
+   // Si fallan, intentar calcular (Forex principalmente)
+   if(tickValue <=0 || tickSize <=0) {
+       double lotSize = SymbolInfoDouble(sym, SYMBOL_TRADE_CONTRACT_SIZE);
+       string profitCurrency = SymbolInfoString(sym, SYMBOL_CURRENCY_PROFIT);
+       string accountCurrency = AccountInfoString(ACCOUNT_CURRENCY);
+
+       if (lotSize > 0 && profitCurrency != "" && accountCurrency != "") {
+           if (profitCurrency == accountCurrency) { // Cotización directa (ej: EURUSD en cuenta EUR)
+               tickValue = point * lotSize;
+               tickSize = point;
+           } else { // Necesita conversión
+               string conversionPair1 = profitCurrency + accountCurrency; // Ej: USDJPY
+               string conversionPair2 = accountCurrency + profitCurrency; // Ej: JPYUSD
+               double rate1 = SymbolInfoDouble(conversionPair1, SYMBOL_ASK); // Usar Ask para convertir coste
+               double rate2 = SymbolInfoDouble(conversionPair2, SYMBOL_ASK);
+
+               if(rate1 > 0) { // Si existe el par directo (Profit -> Account)
+                  tickValue = point * lotSize * rate1;
+                  tickSize = point;
+               } else if (rate2 > 0) { // Si existe el par inverso (Account -> Profit)
+                  tickValue = point * lotSize / rate2; // Dividir por la tasa inversa
+                  tickSize = point;
+               }
+               // Si no se encuentra par de conversión, tickValue permanecerá 0 o negativo
+           }
+       }
+       // Si el cálculo falla, usar fallback muy genérico (poco fiable)
+       if (tickValue <= 0) {
+           tickValue = point * 100000; // Asume contrato 100k (Forex estándar)
+           tickSize = point;
+           Print("Advertencia: No se pudo calcular Tick Value para ", sym, ". Usando fallback genérico.");
+       }
+   }
+
+   // Calcular valor del pip en la moneda de la cuenta
+   double pipValueInAccountCurrency = 0;
+   int digits = (int)SymbolInfoInteger(sym, SYMBOL_DIGITS);
+   double pipSize = (digits == 3 || digits == 5 || digits == 1) ? point * 10 : point; // Ajuste para JPY y otros
+   if (tickSize > 0) {
+     pipValueInAccountCurrency = (tickValue / tickSize) * pipSize;
+   }
+
+   if(pipValueInAccountCurrency <= 0) {
+        Print("Error calculando pip value para ", sym, ". Usando lote mínimo.");
+        return SymbolInfoDouble(sym, SYMBOL_VOLUME_MIN);
+   }
+
+   double lotBasedOnRisk = maxRiskAmount / (slPipsValue * pipValueInAccountCurrency);
+
+   // Ajustar a mínimo, máximo y step del broker
+   double minVolume = SymbolInfoDouble(sym, SYMBOL_VOLUME_MIN);
+   double maxVolume = SymbolInfoDouble(sym, SYMBOL_VOLUME_MAX);
+   double volumeStep = SymbolInfoDouble(sym, SYMBOL_VOLUME_STEP);
+
+   if (minVolume <= 0 || volumeStep <=0 || maxVolume <=0) {
+         Print("Error obteniendo info de volumen para ", sym, ". Usando 0.01.");
+         minVolume = 0.01; volumeStep = 0.01; maxVolume = 100; // Fallbacks comunes
+    }
+
+
+   double finalLot = lotBasedOnRisk;
+   if (finalLot < minVolume) finalLot = minVolume;
+   if (finalLot > maxVolume) finalLot = maxVolume;
+
+   // Redondear hacia abajo al step más cercano
+   finalLot = MathFloor(finalLot / volumeStep) * volumeStep;
+
+   // Limitar por el input del usuario si es menor que el calculado por riesgo
+   if (LotSize > 0 && finalLot > LotSize) finalLot = LotSize; // Solo limitar si LotSize es positivo
+
+   // Asegurarse de que no sea menor que el mínimo después de la limitación del input y redondear de nuevo
+   if (finalLot < minVolume) finalLot = minVolume;
+   finalLot = MathFloor(finalLot / volumeStep) * volumeStep; // Redondear de nuevo por si LotSize no era múltiplo del step
+
+   // Última verificación contra cero
+   if (finalLot <= 0) finalLot = minVolume;
+
+   return NormalizeDouble(finalLot, 2); // Normalizar a 2 decimales
+}
+
+
+//+------------------------------------------------------------------+
+//| Buffer Inteligente para SL Inicial                               |
+//+------------------------------------------------------------------+
+double CalculateSmartStopBuffer() // 
+{
+    // Usar el buffer dinámico calculado previamente + un extra fijo
+    double dynamicBuffer = CalculateDynamicSLBuffer_M15(); // 
+    double fixedBufferPips = StopHuntBufferPips;           // Usar input como buffer fijo extra 
+    
+    // --- Obtener _Point y _Digits para el cálculo de pipSize ---
+    double currentPoint = SymbolInfoDouble(Symbol(), SYMBOL_POINT);
+    int    currentDigits = (int)SymbolInfoInteger(Symbol(), SYMBOL_DIGITS);
+
+    // --- NUEVA Lógica para calcular el valor en puntos del buffer en pips ---
+    // double pipSizeMultiplier = (currentDigits == 3 || currentDigits == 5) ? 10.0 : 1.0;
+    // double fixedBuffer = fixedBufferPips * currentPoint * pipSizeMultiplier;
+    // O, más directamente aplicando la lógica para convertir pips a valor de precio:
+    
+    double onePipValue;
+    if (currentDigits == 3 || currentDigits == 5) // Para JPY pairs (3 digits) o XAUUSD (3/2 digits often treated as 5 for pips)
+    {
+        onePipValue = currentPoint * 10;
+    }
+    else // Para la mayoría de los pares de divisas (e.g., EURUSD con 5 dígitos, donde el 5º es un pipette)
+    {
+        onePipValue = currentPoint; // Si StopHuntBufferPips ya está en puntos, no multiplicar.
+                                   // Si StopHuntBufferPips está en "pips tradicionales" (4o decimal para EURUSD)
+                                   // entonces sería onePipValue = currentPoint * 10;
+    }
+    // ASUMIENDO que StopHuntBufferPips se refiere a pips donde el último dígito es un pipette (ej. 5 pips en EURUSD = 50 points)
+    // O que el 2do/4to decimal es el "pip" y el 3ro/5to es el "pipette"
+    // La nueva lógica es `(_Digits == 3 || _Digits == 5) ? _Point * 10 : _Point;`
+    // Esto significa que si _Digits es 3 (XXXJPY) o 5 (EURUSD), 1 pip = _Point * 10. Sino 1 pip = _Point.
+    // Esta interpretación es un poco ambigua. "pipSize" tradicionalmente es:
+    // Para 5 y 3 decimales: 0.00010 / 0.010 (el 10 es el multiplicador de _Point)
+    // Para 4 y 2 decimales: 0.0001 / 0.01 (el 1 es el multiplicador de _Point)
+
+    // Aplicando la lógica directamente como la pediste para (_Digits == 3 || _Digits == 5) ? _Point * 10 : _Point
+    // Aquí, _Point * X define el valor de "un pip" en términos de precio.
+    // Si fixedBufferPips es "3 pips", y 1 pip = _Point * 10, entonces total = 3 * (_Point * 10)
+    double pipMonetaryValue = (currentDigits == 3 || currentDigits == 5) ? currentPoint * 10 : currentPoint;
+    double fixedBuffer = fixedBufferPips * pipMonetaryValue;
+    
+    if (fixedBuffer <= 0 && fixedBufferPips > 0) // Fallback si el cálculo da 0 pero los pips eran positivos
+    {
+        fixedBuffer = fixedBufferPips * 0.0001; // Fallback genérico si point es 0, asumiendo par XXX/USD
+        if (currentDigits == 3 || currentDigits == 2) fixedBuffer = fixedBufferPips * 0.01; // Fallback para JPY o 2 decimales
+        PrintFormat("CalculateSmartStopBuffer: Fallback para fixedBuffer activado. Pips: %.1f, Digits: %d, Point: %g", fixedBufferPips, currentDigits, currentPoint);
+    }
+    
+    PrintFormat("CalculateSmartStopBuffer: fixedBufferPips=%.1f, pipMonetaryValue=%.*f, fixedBuffer (price value)=%.*f",
+                fixedBufferPips, currentDigits, pipMonetaryValue, currentDigits, fixedBuffer);
+
+    return dynamicBuffer + fixedBuffer; // 
+}
+
+//+------------------------------------------------------------------+
+//| Abrir trade con validaciones y ajustes de SL/TP                  |
+//+------------------------------------------------------------------+
+bool OpenTradeSimple(bool isLong, double lot, double priceSignalOrigin, double initialStopLoss, string comment)
+{
+   // --- Obtener variables globales y de símbolo ---
+   double point_val = SymbolInfoDouble(Symbol(), SYMBOL_POINT);
+   int    digits_val = (int)SymbolInfoInteger(Symbol(), SYMBOL_DIGITS);
+
+   // --- a. Registro Detallado Inicial ---
+   PrintFormat("OpenTradeSimple: Intento de operación %s. Lote: %.2f, Origen Señal: %s, SL Inicial: %s, Comentario: %s",
+               (isLong ? "BUY" : "SELL"), lot,
+               DoubleToString(priceSignalOrigin, digits_val),
+               DoubleToString(initialStopLoss, digits_val),
+               comment);
+
+   // 1. Validar Lote
+   if(lot <= 0)
+   {
+      PrintFormat("OpenTradeSimple: Lote inválido (%.2f). Abortando.", lot);
+      return false;
+   }
+   lot = NormalizeDouble(lot, 2); // Asegurar normalización del lote
+
+   // --- b. Actualización de Precios en Tiempo Real ---
+   double actualEntryPrice = SymbolInfoDouble(Symbol(), isLong ? SYMBOL_ASK : SYMBOL_BID);
+   if(actualEntryPrice == 0.0)
+   {
+       PrintFormat("OpenTradeSimple: No se pudo obtener el precio de mercado actual (Ask/Bid). Abortando.");
+       return false;
+   }
+
+   // 2. Ajustar SL si está cerca de liquidez (lógica existente)
+   double finalStopLoss = initialStopLoss;
+   double smartBufferPips = StopHuntBufferPips;
+   if(IsStopLossNearLiquidityLevel(initialStopLoss, smartBufferPips)) 
+   {
+      double pipMonetaryValue = (digits_val == 3 || digits_val == 5) ? point_val * 10 : point_val;
+      double smartBufferValue = smartBufferPips * pipMonetaryValue;
+
+      if (smartBufferValue <= 0 && smartBufferPips > 0) smartBufferValue = smartBufferPips * 0.0001; // Fallback
+      finalStopLoss = isLong ? initialStopLoss - smartBufferValue : initialStopLoss + smartBufferValue;
+      PrintFormat("OpenTradeSimple: SL inicial %s ajustado por cercanía a liquidez. Nuevo SL pre-cálculo: %s",
+                  DoubleToString(initialStopLoss, digits_val),
+                  DoubleToString(finalStopLoss, digits_val));
+   }
+
+   // 3. Calcular Take Profit basado en el actualEntryPrice y el RiskRewardRatio
+   double riskAmount = MathAbs(actualEntryPrice - finalStopLoss);
+   double finalTakeProfit = 0.0;
+
+   if(riskAmount < point_val * 1.0) // Riesgo mínimo de 1 punto
+   {
+      PrintFormat("OpenTradeSimple: Riesgo calculado (%.*f puntos) demasiado pequeño. Abortando.", digits_val, riskAmount/point_val);
+      return false;
+   }
+   if(RiskRewardRatio > 0)
+   {
+       finalTakeProfit = isLong ? actualEntryPrice + (riskAmount * RiskRewardRatio) : actualEntryPrice - (riskAmount * RiskRewardRatio);
+   }
+
+   // --- c. Validación de Niveles SL/TP Específica para SELL (y BUY) antes de minDist ---
+   double stopsLevelRaw = SymbolInfoInteger(Symbol(), SYMBOL_TRADE_STOPS_LEVEL);
+   double defaultAdjustment = (stopsLevelRaw > 0 ? stopsLevelRaw : 2) * point_val; // STOPS_LEVEL en puntos, o 2 puntos de fallback
+
+   if(isLong) // BUY
+   {
+      if(finalStopLoss >= actualEntryPrice)
+      {
+         PrintFormat("OpenTradeSimple WARNING (BUY): SL (%.*f) está en o por ENCIMA del precio de entrada (%.*f). Reajustando SL.",
+                     digits_val, finalStopLoss, digits_val, actualEntryPrice);
+         finalStopLoss = actualEntryPrice - defaultAdjustment;
+         riskAmount = MathAbs(actualEntryPrice - finalStopLoss); // Recalcular riskAmount
+         if(RiskRewardRatio > 0) finalTakeProfit = actualEntryPrice + (riskAmount * RiskRewardRatio);
+      }
+      if(finalTakeProfit != 0.0 && finalTakeProfit <= actualEntryPrice)
+      {
+         PrintFormat("OpenTradeSimple WARNING (BUY): TP (%.*f) está en o por DEBAJO del precio de entrada (%.*f). Reajustando TP.",
+                     digits_val, finalTakeProfit, digits_val, actualEntryPrice);
+         finalTakeProfit = actualEntryPrice + defaultAdjustment;
+         if (RiskRewardRatio > 0 && riskAmount * RiskRewardRatio < defaultAdjustment) { 
+             finalTakeProfit = actualEntryPrice + riskAmount * MathMax(RiskRewardRatio, 0.5); 
+         }
+      }
+   }
+   else // SELL
+   {
+      if(finalStopLoss <= actualEntryPrice)
+      {
+         PrintFormat("OpenTradeSimple WARNING (SELL): SL (%.*f) está en o por DEBAJO del precio de entrada (%.*f). Reajustando SL.",
+                     digits_val, finalStopLoss, digits_val, actualEntryPrice);
+         finalStopLoss = actualEntryPrice + defaultAdjustment;
+         riskAmount = MathAbs(actualEntryPrice - finalStopLoss); // Recalcular riskAmount
+         if(RiskRewardRatio > 0) finalTakeProfit = actualEntryPrice - (riskAmount * RiskRewardRatio);
+      }
+      if(finalTakeProfit != 0.0 && finalTakeProfit >= actualEntryPrice)
+      {
+         PrintFormat("OpenTradeSimple WARNING (SELL): TP (%.*f) está en o por ENCIMA del precio de entrada (%.*f). Reajustando TP.",
+                     digits_val, finalTakeProfit, digits_val, actualEntryPrice);
+         finalTakeProfit = actualEntryPrice - defaultAdjustment;
+         if (RiskRewardRatio > 0 && riskAmount * RiskRewardRatio < defaultAdjustment) {
+             finalTakeProfit = actualEntryPrice - riskAmount * MathMax(RiskRewardRatio, 0.5);
+         }
+      }
+   }
+
+   // --- d. Cálculo y Aplicación de Distancia Mínima del Broker (minDist) ---
+   double minDistAbsolute = stopsLevelRaw * point_val;
+
+   if(minDistAbsolute < point_val) // Si SYMBOL_TRADE_STOPS_LEVEL es 0 o muy pequeño
+   {
+       minDistAbsolute = 2.0 * point_val; // Fallback a 2 puntos
+       PrintFormat("OpenTradeSimple: SYMBOL_TRADE_STOPS_LEVEL es %g puntos. Usando fallback de minDistAbsolute = %.*f", stopsLevelRaw, digits_val, minDistAbsolute);
+   }
+
+   if(isLong) // BUY
+   {
+      finalStopLoss = MathMin(finalStopLoss, actualEntryPrice - minDistAbsolute);
+      if(finalTakeProfit != 0.0)
+      {
+         finalTakeProfit = MathMax(finalTakeProfit, actualEntryPrice + minDistAbsolute);
+      }
+   }
+   else // SELL
+   {
+      finalStopLoss = MathMax(finalStopLoss, actualEntryPrice + minDistAbsolute);
+      if(finalTakeProfit != 0.0)
+      {
+         finalTakeProfit = MathMin(finalTakeProfit, actualEntryPrice - minDistAbsolute);
+      }
+   }
+
+   // --- e. Normalización Final de Precios ---
+   finalStopLoss = NormalizeDouble(finalStopLoss, digits_val);
+   if(finalTakeProfit != 0.0)
+   {
+      finalTakeProfit = NormalizeDouble(finalTakeProfit, digits_val);
+   }
+
+   // Verificación final de que SL y TP no se crucen o sean inválidos
+   if(finalTakeProfit != 0.0)
+   {
+      if(isLong && finalStopLoss >= finalTakeProfit)
+      {
+         PrintFormat("OpenTradeSimple ERROR (BUY): SL Final (%.*f) >= TP Final (%.*f). Configurando TP a 0.",
+                     digits_val, finalStopLoss, digits_val, finalTakeProfit);
+         finalTakeProfit = 0.0; // Abortar TP en lugar de la operación completa
+      }
+      if(!isLong && finalStopLoss <= finalTakeProfit)
+      {
+         PrintFormat("OpenTradeSimple ERROR (SELL): SL Final (%.*f) <= TP Final (%.*f). Configurando TP a 0.",
+                     digits_val, finalStopLoss, digits_val, finalTakeProfit);
+         finalTakeProfit = 0.0; // Abortar TP
+      }
+   }
+    // Otra verificación: SL no puede ser igual al precio de entrada después de los ajustes
+    if ((isLong && finalStopLoss >= actualEntryPrice) || (!isLong && finalStopLoss <= actualEntryPrice)) {
+        PrintFormat("OpenTradeSimple ERROR: SL Final (%.*f) inválido respecto al precio de entrada (%.*f) tras ajustes. Abortando.", digits_val, finalStopLoss, digits_val, actualEntryPrice);
+        return false;
+    }
+
+
+   // --- f. Registro Detallado Final ---
+   PrintFormat("OpenTradeSimple: Precios finales para envío. ActualEntry: %s, SL Final: %s, TP Final: %s",
+               DoubleToString(actualEntryPrice, digits_val),
+               DoubleToString(finalStopLoss, digits_val),
+               (finalTakeProfit == 0.0 ? "0.0 (Sin TP)" : DoubleToString(finalTakeProfit, digits_val)));
+
+   // 4. Enviar orden a Mercado usando OrderSend
+   MqlTradeRequest request;
+   MqlTradeResult  result;
+   ZeroMemory(request);
+   ZeroMemory(result);
+
+   int magicNumber = 12345; // <<< ¡¡¡USA TU NÚMERO MÁGICO!!! (Debe coincidir con el de tu EA) 
+
+   request.action = TRADE_ACTION_DEAL;
+   request.symbol = Symbol();
+   request.volume = lot;
+   request.type = isLong ? ORDER_TYPE_BUY : ORDER_TYPE_SELL;
+   request.price = actualEntryPrice;
+   request.sl = finalStopLoss;
+   request.tp = finalTakeProfit;
+   request.deviation = 100;
+   request.magic = magicNumber;
+   request.comment = comment;
+   request.type_filling = ORDER_FILLING_FOK;
+
+   bool orderSent = false;
+   if(!OrderSend(request, result))
+   {
+      PrintFormat("OpenTradeSimple: Falló el envío FOK. Retcode: %u, Comentario broker: %s, Comentario sistema: %s",
+                  result.retcode, result.comment, GetLastError());
+      // Códigos de error comunes para reintento con IOC:
+      if(result.retcode == TRADE_RETCODE_REQUOTE || result.retcode == TRADE_RETCODE_PRICE_OFF ||
+         result.retcode == TRADE_RETCODE_CONNECTION || result.retcode == TRADE_RETCODE_TIMEOUT)
+      {
+         PrintFormat("OpenTradeSimple: Reintentando con IOC...");
+         request.type_filling = ORDER_FILLING_IOC;
+         if(!OrderSend(request, result))
+         {
+             PrintFormat("OpenTradeSimple: Error al abrir trade (IOC): %u - %s. Retcode GetLastError: %u", result.retcode, result.comment, GetLastError());
+             return false; // Falló ambos
+         } else {
+              orderSent = true;
+              PrintFormat("OpenTradeSimple: Orden IOC enviada. Retcode: %u, Comentario: %s", result.retcode, result.comment);
+         }
+      } else {
+          return false;
+      }
+   } else {
+        orderSent = true;
+        PrintFormat("OpenTradeSimple: Orden FOK enviada y procesada. Retcode: %u, Comentario: %s", result.retcode, result.comment);
+   }
+
+   if (orderSent)
+   {
+      PrintFormat("OpenTradeSimple: Confirmación de envío. Ticket Orden: %u, SL: %s, TP: %s, Lote: %.2f, Precio Ejecución (aprox): %s",
+                  result.order,
+                  DoubleToString(finalStopLoss, digits_val),
+                  (finalTakeProfit == 0.0 ? "0.0" : DoubleToString(finalTakeProfit, digits_val)),
+                  lot,
+                  DoubleToString(actualEntryPrice, digits_val));
+
+      // La lógica para StoreInitialVolume, tradesToday, lastH4TradeTime se mantiene como en tu EA original 
+      // Es crucial obtener el ticket de la POSICIÓN (no solo result.order) para StoreInitialVolume.
+      // Esto a menudo implica buscar la posición después de un breve Sleep() o en el siguiente tick.
+      // Ejemplo simplificado de cómo podrías intentar obtener el ticket de la posición (necesita robustez):
+      Sleep(500); // Dar tiempo al servidor para procesar
+      ulong position_ticket = 0;
+      if(result.deal > 0) // Si hubo un deal, es más probable que tengamos una posición.
+      {
+          // Iterar por las posiciones para encontrar la que corresponde a esta orden.
+          for(int i = PositionsTotal() - 1; i >= 0; i--)
+          {
+              if(PositionGetTicket(i))
+              {
+                  if(PositionGetInteger(POSITION_MAGIC) == magicNumber &&
+                     PositionGetString(POSITION_SYMBOL) == Symbol() &&
+                     PositionGetInteger(POSITION_TIME) * 1000 >= result.time) // Usar POSITION_TIME y convertir a milisegundos
+                     {
+                        position_ticket = PositionGetInteger(POSITION_TICKET);
+                        break;
+                     }
+              }
+          }
+          if(position_ticket > 0 && PositionSelectByTicket(position_ticket)) {
+             double initialVolume = PositionGetDouble(POSITION_VOLUME); // Usar POSITION_VOLUME
+             StoreInitialVolume(position_ticket, initialVolume); 
+             Print("Posición detectada Ticket: ", position_ticket, " Volumen Inicial: ", initialVolume); 
+          } else {
+             Print("OpenTradeSimple: Advertencia - No se pudo identificar/guardar el volumen inicial para la posición de la orden ", result.order);
+          }
+      } else {
+          Print("OpenTradeSimple: No hubo un ticket de deal en el resultado, la orden podría no haberse ejecutado. Retcode: ", result.retcode);
+      }
+
+
+      tradesToday++; 
+      lastH4TradeTime = iTime(Symbol(), PERIOD_H4, 0); 
+      return true;
+   }
+   return false; 
+}
+
+void CheckLiquidityHunting()
+{
+    if(PositionsTotal() > 0 || tradesToday >= MaxTradesPerDay) return;
+
+    // Ordenar zonas por fuerza descendente para priorizar las más fuertes
+    // Bubble Sort simple por fuerza (descendente) - Podría optimizarse si hay muchas zonas
+    for(int i=0; i < ArraySize(liquidityZones)-1; i++){
+       for(int j=0; j < ArraySize(liquidityZones)-1-i; j++){
+          if(liquidityZones[j].strength < liquidityZones[j+1].strength){
+             LiquidityZone temp = liquidityZones[j];
+             liquidityZones[j] = liquidityZones[j+1];
+             liquidityZones[j+1] = temp;
+          }
+       }
+    }
+
+
+    for(int i = 0; i < ArraySize(liquidityZones); i++)
+    {
+        // Considerar solo zonas fuertes (ej: EQH/EQL, Session, Old H/L - fuerza >= 8.5)
+        if(liquidityZones[i].strength < 8.5) continue;
+
+        double liquidityLevel = liquidityZones[i].price;
+        bool isBuySideLiquidity = liquidityZones[i].isBuySide; // True=High, False=Low
+        string zoneType = liquidityZones[i].type;
+
+        // Detectar si hubo un Stop Hunt reciente en esta zona
+        int huntStrength = 0;
+        bool isStopHunt = DetectStopHunt(liquidityLevel, isBuySideLiquidity, huntStrength);
+
+        if(isStopHunt && huntStrength >= 6) // Umbral de fuerza del hunt
+        {
+            // --- Confirmación Adicional ---
+            // 1. ¿La reversión post-hunt está alineada con el Bias H4?
+            bool enterLong = !isBuySideLiquidity; // Si barre Low (BuySide=false), entramos Long
+            bool reversalAlignedWithBias = (enterLong == g_H4BiasBullish);
+
+            if(!reversalAlignedWithBias && UseDailyBias) continue; // Ignorar si va contra bias H4
+
+            // 2. ¿Hay alguna señal de confirmación adicional M5? (ej: FVG, BOS/ChoCH post-hunt)
+             bool confirmationOK = true; // Añadir lógica si se requiere
+             // Necesitaríamos el índice de la barra del hunt desde DetectStopHunt
+             // int huntBar = ... ;
+             // if (enterLong && !DetectBOS(PERIOD_M5, huntBar-1, true, 5)) confirmationOK = false;
+             // if (!enterLong && !DetectBOS(PERIOD_M5, huntBar-1, false, 5)) confirmationOK = false;
+             if (!confirmationOK) continue;
+
+            // --- Abrir Trade ---
+            double lot = CalculateLotSize(); // Usar cálculo estándar basado en SL fijo del input
+            double entryPrice = SymbolInfoDouble(Symbol(), enterLong ? SYMBOL_ASK : SYMBOL_BID); // Entrar a mercado
+            double stopLoss = 0.0;
+            double atrM5 = ComputeATR(PERIOD_M5, 14);
+            if (atrM5 <= 0) atrM5 = _Point * 100;
+            double slBufferPoints = MathMax(StopLossPips * _Point * (Digits()%2==1?10:1), atrM5 * 1.5); // SL fijo o ATR * 1.5
+            if(slBufferPoints <= 0) slBufferPoints = StopLossPips * 0.0001 * 1.5; // Fallback
+
+            // Necesitamos el precio extremo de la penetración para poner el SL detrás.
+            // DetectStopHunt debería idealmente devolver este precio.
+            // Como no lo hace, basamos SL en el nivel de liquidez + buffer por ahora.
+            // O podríamos buscar el High/Low de la barra de penetración (más complejo).
+            if(enterLong) // Entrar COMPRA después de barrer Low
+            {
+                 stopLoss = liquidityLevel - slBufferPoints; // SL debajo del Low barrido (nivel original)
+                 Print(">> BUYING AFTER STOP HUNT (", zoneType, "): Nivel=", liquidityLevel, ", Fuerza hunt=", huntStrength);
+                 OpenTradeSimple(true, lot, entryPrice, stopLoss, "Buy StopHunt " + zoneType);
+            }
+            else // Entrar VENTA después de barrer High
+            {
+                 stopLoss = liquidityLevel + slBufferPoints; // SL encima del High barrido (nivel original)
+                 Print(">> SELLING AFTER STOP HUNT (", zoneType, "): Nivel=", liquidityLevel, ", Fuerza hunt=", huntStrength);
+                 OpenTradeSimple(false, lot, entryPrice, stopLoss, "Sell StopHunt " + zoneType);
+            }
+
+            // Salir del loop después de intentar abrir un trade
+            return; // Intentar solo un trade por tick
+        }
+    }
+}
+
+
+void ManageRisk() // Gestión general: BE, Parciales, llamadas a Trailings
+{
+   datetime currentTime = TimeCurrent();
+   int totalPositions = PositionsTotal(); // Guardar total para evitar problemas si se cierra una en el loop
+
+   for(int i = totalPositions - 1; i >= 0; i--)
+   {
+      ulong ticket = PositionGetTicket(i);
+      if(!PositionSelectByTicket(ticket)) continue;
+
+      // Verificar Magic Number (IMPORTANTE)
+      if(PositionGetInteger(POSITION_MAGIC) != 12345) continue; // <<< ¡¡¡REEMPLAZA 12345!!!
+
+      // *** CORRECCIÓN: Cast a datetime ***
+      datetime openTime = (datetime)PositionGetInteger(POSITION_TIME);
+
+      // Opcional: No gestionar trades demasiado recientes
+      // if(currentTime - openTime < MinimumHoldTimeSeconds) continue;
+
+      string sym = PositionGetString(POSITION_SYMBOL);
+      if(sym != Symbol()) continue; // Solo gestionar trades del símbolo actual
+
+      double openPrice = PositionGetDouble(POSITION_PRICE_OPEN);
+      double stopLoss = PositionGetDouble(POSITION_SL);
+      double takeProf = PositionGetDouble(POSITION_TP);
+
+      // Ignorar si no hay SL inicial? Podría ser una posición sin SL gestionada manualmente.
+      // if (stopLoss == 0) continue;
+
+      long type = PositionGetInteger(POSITION_TYPE);
+      double currentPrice = (type == POSITION_TYPE_BUY) ? SymbolInfoDouble(sym, SYMBOL_BID) : SymbolInfoDouble(sym, SYMBOL_ASK);
+      double point = SymbolInfoDouble(sym, SYMBOL_POINT);
+      int digits = (int)SymbolInfoInteger(sym, SYMBOL_DIGITS);
+      double pipsFactor = (digits == 3 || digits == 5 || digits == 1) ? 10.0 : 1.0; // Factor para convertir puntos a pips (0.1 / 1 / 10)
+
+      // Calcular R actual y Pips en positivo
+      double initialRiskPoints = 0;
+      if(stopLoss != 0) initialRiskPoints = MathAbs(openPrice - stopLoss) / point;
+
+      double currentProfitPoints = 0;
+      if(type == POSITION_TYPE_BUY) currentProfitPoints = (currentPrice - openPrice) / point;
+      else currentProfitPoints = (openPrice - currentPrice) / point;
+      double currentPips = currentProfitPoints / pipsFactor; // Pips actuales en positivo/negativo
+
+      // --- BreakEven (Usa dyn_BreakEvenPips) ---
+      if(UseBreakEven && stopLoss != 0) // Solo si hay SL inicial
+      {
+         // Comprobar si BE ya está puesto (o mejor)
+         bool isBEsetOrBetter = false;
+         if(type == POSITION_TYPE_BUY && stopLoss >= openPrice) isBEsetOrBetter = true;
+         if(type == POSITION_TYPE_SELL && stopLoss <= openPrice) isBEsetOrBetter = true;
+
+         if(!isBEsetOrBetter && currentPips >= dyn_BreakEvenPips)
+         {
+             double beLevel = openPrice; // SL exacto en la entrada
+             // Podría añadirse un pequeño buffer:
+             double beBufferPips = 1.0; // 1 pip de buffer
+             double beBufferPoints = beBufferPips * point * pipsFactor; // Buffer en puntos
+
+             if (type == POSITION_TYPE_BUY) beLevel += beBufferPoints;
+             else beLevel -= beBufferPoints;
+             beLevel = NormalizeDouble(beLevel, digits);
+
+             // Modificar solo si el BE es mejor que el SL actual
+             if((type == POSITION_TYPE_BUY && beLevel > stopLoss) || (type == POSITION_TYPE_SELL && beLevel < stopLoss))
+             {
+                if(trade.PositionModify(ticket, beLevel, takeProf)) {
+                   Print(">> Pos ", ticket, " BreakEven set at ", beLevel, " (", dyn_BreakEvenPips, " pips reached)");
+                   stopLoss = beLevel; // Actualizar SL local para lógica posterior
+                } else {
+                   Print("Error setting BE for pos ", ticket, ": ", GetLastError());
+                }
+             }
+         }
+      } // Fin BreakEven
+
+      // --- Gestión de Cierre Parcial Avanzado (si está activado) ---
+      int indexFlag = (int)(ticket % 100); // Simple hashing para el flag
+      if(indexFlag < 0 || indexFlag >= 100) indexFlag = 0; // Asegurar índice válido
+
+      if(UsePartialClose && stopLoss != 0) // Necesita SL para calcular R
+      {
+          ManagePartialWithFixedTP_Advanced(); // Llama a la función avanzada de parciales (opera sobre la pos seleccionada)
+          // Re-seleccionar por si el parcial cerró la posición o cambió datos
+          if(!PositionSelectByTicket(ticket)) continue; // Pasar a la siguiente si ya no existe
+          // Actualizar variables locales por si cambiaron SL/TP/Volumen
+           stopLoss = PositionGetDouble(POSITION_SL);
+           takeProf = PositionGetDouble(POSITION_TP);
+      }
+
+      // --- Seleccionar y Aplicar Estrategia de Trailing ---
+      bool trailingApplied = false;
+      if(UseFractalStopHuntTrailing)
+      {
+          // El Trailing Fractal tiene prioridad si está activo
+          ApplyStopHuntFractalTrailing(ticket, FractalTrailingDepth, FractalTrailingBufferPips, FractalTrailingSearchBars);
+          // Si el SL cambió, actualizar variable local
+           if(PositionSelectByTicket(ticket)) stopLoss = PositionGetDouble(POSITION_SL); else continue;
+          trailingApplied = true; // Asumir que se intentó aplicar
+      }
+
+      // El Trailing Adaptativo se activa DESPUÉS del segundo parcial en ManagePartialWithFixedTP_Advanced
+      // Comprobamos el estado para llamar a AdvancedAdaptiveTrailing
+      if(UsePartialClose && partialClosedFlags[indexFlag] >= 2) // Si el estado es 2 (o más)
+      {
+          if(!UseFractalStopHuntTrailing){ // Solo si el fractal no está activo o ya se aplicó
+             AdvancedAdaptiveTrailing(ticket, takeProf);
+             if(PositionSelectByTicket(ticket)) stopLoss = PositionGetDouble(POSITION_SL); else continue;
+             trailingApplied = true; // Se aplicó el adaptativo
+          }
+      }
+
+      // TrailingStop Estándar (Solo si está activado Y ninguna otra estrategia de trailing avanzada lo gestionó)
+      if(UseTrailingStop && !trailingApplied) // Solo si no se aplicó Fractal ni Adaptativo
+      {
+         if (stopLoss == 0) continue; // No hacer trailing estándar si no hay SL
+
+         double trailDistPips = (double)dyn_TrailingDistancePips; // Usa distancia dinámica
+         double offsetPoints = trailDistPips * point * pipsFactor; // Offset en puntos
+
+         double desiredSL = 0;
+         if(type == POSITION_TYPE_BUY) desiredSL = currentPrice - offsetPoints;
+         else desiredSL = currentPrice + offsetPoints;
+         desiredSL = NormalizeDouble(desiredSL, digits);
+
+         // Solo modificar si el nuevo SL es mejor que el actual
+         if((type == POSITION_TYPE_BUY && desiredSL > stopLoss) || (type == POSITION_TYPE_SELL && desiredSL < stopLoss))
+         {
+             if(trade.PositionModify(ticket, desiredSL, takeProf))
+                Print(">> Pos ", ticket, " Standard Trailing Stop updated to ", desiredSL);
+             // else: Print error si falla
+         }
+         // trailingApplied = true; // No necesario marcar aquí si es el último
+      }
+
+   } // Fin loop posiciones
+
+    // Limpiar volúmenes almacenados de posiciones que ya no existen
+    int storedCount = ArraySize(g_positionTickets);
+    for (int k = storedCount - 1; k >= 0; k--) {
+        if (!PositionSelectByTicket(g_positionTickets[k])) {
+            RemoveStoredVolume(g_positionTickets[k]);
+        }
+    }
+}
+
+
+// Función para gestionar SL específicamente contra Stop Runs (puede integrarse en ManageRisk o llamarse por separado)
+void ManageSLWithStopRunProtection()
+{
+    int totalPositions = PositionsTotal();
+    for(int i = totalPositions-1; i >= 0; i--)
+    {
+        ulong ticket = PositionGetTicket(i);
+        if(!PositionSelectByTicket(ticket)) continue;
+        if(PositionGetInteger(POSITION_MAGIC) != 12345) continue; // <<< ¡¡¡TU NÚMERO MÁGICO!!!
+
+        double sl = PositionGetDouble(POSITION_SL);
+        if(sl == 0.0) continue; // Ignorar si no hay SL
+
+        long type = PositionGetInteger(POSITION_TYPE);
+        bool isBuy = (type == POSITION_TYPE_BUY);
+        int digits = (int)SymbolInfoInteger(Symbol(), SYMBOL_DIGITS);
+        double point = SymbolInfoDouble(Symbol(), SYMBOL_POINT);
+
+
+        // Detectar si se está formando un Stop Hunt *contra* nuestra posición cerca del SL actual
+        int huntStrength = 0;
+        // Si tenemos una COMPRA (isBuy=true), el SL está abajo. Buscamos un hunt que barra ese LOW (isBuySideLiquidity=false).
+        // Si tenemos una VENTA (isBuy=false), el SL está arriba. Buscamos un hunt que barra ese HIGH (isBuySideLiquidity=true).
+        bool stopHuntFormado = DetectStopHunt(sl, /*isBuySideLiquidity=*/ !isBuy, huntStrength);
+
+        if(stopHuntFormado && huntStrength >= 5) // Umbral de fuerza ajustable
+        {
+            double extraBufferPips = 3.0; // Pips extra para alejar el SL
+            double extraBuffer = extraBufferPips * point * (digits % 2 == 1 ? 10 : 1);
+            if (extraBuffer <= 0) extraBuffer = extraBufferPips * 0.0001; // Fallback
+            double newSL = isBuy ? sl - extraBuffer : sl + extraBuffer;
+            newSL = NormalizeDouble(newSL, digits);
+
+            // Modificar solo si el nuevo SL es más seguro (más lejos)
+            if((isBuy && newSL < sl) || (!isBuy && newSL > sl))
+            {
+               // Comprobar si el nuevo SL no cruza el precio actual
+                double currentPrice = isBuy ? SymbolInfoDouble(Symbol(), SYMBOL_BID) : SymbolInfoDouble(Symbol(), SYMBOL_ASK);
+                if ((isBuy && newSL < currentPrice) || (!isBuy && newSL > currentPrice))
+                {
+                   // *** CORRECCIÓN: Añadir verificación antes de modificar ***
+                   double currentTP = PositionGetDouble(POSITION_TP);
+                   Print("Intentando modificar SL [StopRunProtect] Pos ", ticket, ". newSL=", newSL, ", currentTP=", currentTP);
+                   if(trade.PositionModify(ticket, newSL, currentTP))
+                      Print(">> [StopRunProtect] Pos ", ticket, ": SL ajustado a ", newSL, " (Hunt Fuerza: ", huntStrength, ")");
+                   else
+                      Print("Error ajustando SL [StopRunProtect] Pos ", ticket,": ", GetLastError());
+                } else {
+                    Print(">> [StopRunProtect] Pos ", ticket, ": Nuevo SL ", newSL, " cruzaría precio actual ", currentPrice, ". No modificado.");
+                }
+            }
+        }
+    }
+}
+
+
+// Función Avanzada de Cierre Parcial (2R y 3R) y Activación de Trailing
+void ManagePartialWithFixedTP_Advanced()
+{
+   // Esta función opera sobre la posición seleccionada en el bucle de ManageRisk
+   ulong ticket = PositionGetInteger(POSITION_TICKET);
+   if(ticket == 0) return;
+
+   double entryPrice      = PositionGetDouble(POSITION_PRICE_OPEN);
+   double stopLoss        = PositionGetDouble(POSITION_SL);
+   if(stopLoss == 0) return; // Necesitamos SL inicial para calcular R
+
+   double currentPrice    = PositionGetDouble(POSITION_PRICE_CURRENT);
+   double fixedTakeProfit = PositionGetDouble(POSITION_TP);
+   double currentVolume   = PositionGetDouble(POSITION_VOLUME);
+   long   type            = PositionGetInteger(POSITION_TYPE);
+   int    digits          = (int)SymbolInfoInteger(Symbol(), SYMBOL_DIGITS);
+   double point           = SymbolInfoDouble(Symbol(), SYMBOL_POINT);
+   double volStep         = SymbolInfoDouble(Symbol(), SYMBOL_VOLUME_STEP);
+   double minVol          = SymbolInfoDouble(Symbol(), SYMBOL_VOLUME_MIN);
+   if (volStep <= 0) volStep = 0.01; // Fallback
+   if (minVol <= 0) minVol = 0.01;   // Fallback
+
+   // *** CORRECCIÓN: Usar volumen inicial almacenado ***
+   double initialVolume = GetStoredInitialVolume(ticket);
+   if(initialVolume <= 0) {
+       //Print("Advertencia: No se encontró volumen inicial para ", ticket, " en ManagePartial. Usando volumen actual.");
+       initialVolume = currentVolume; // Usar volumen actual como fallback (cambia la lógica de %)
+       if (initialVolume <= 0) return; // Salir si ni siquiera el actual es válido
+   }
+
+   double initialRisk = MathAbs(entryPrice - stopLoss);
+   if(initialRisk < point * 1.0) return; // Riesgo demasiado pequeño
+
+   double currentProfitOrLoss;
+   if(type == POSITION_TYPE_BUY) currentProfitOrLoss = currentPrice - entryPrice;
+   else currentProfitOrLoss = entryPrice - currentPrice;
+
+   // Calcular R solo si está en positivo
+   double currentR = (currentProfitOrLoss > 0 && initialRisk > 0) ? (currentProfitOrLoss / initialRisk) : 0;
+
+   // --- Gestión de Estado de Parciales ---
+   int indexFlag = (int)(ticket % 100);
+   if(indexFlag < 0 || indexFlag >= 100) indexFlag = 0;
+   int stage = partialClosedFlags[indexFlag];
+
+   double TP1_R = 2.0;
+   double TP2_R = 3.0;
+   double partialClose1_Percent = 30.0; // 30% en TP1 (del inicial)
+   double partialClose2_Percent = 30.0; // 30% en TP2 (del inicial)
+
+   // --- Parcial en 2R (stage 0 -> 1) ---
+   if(stage == 0 && currentR >= TP1_R)
+   {
+      double closeVol = initialVolume * (partialClose1_Percent / 100.0);
+      // Ajustar al step y mínimo volumen
+      closeVol = MathRound(closeVol / volStep) * volStep;
+      closeVol = MathMax(minVol, closeVol);
+      closeVol = NormalizeDouble(closeVol, 2); // Normalizar
+
+      // Asegurar que queda volumen mínimo después de cerrar Y que closeVol es menor que el actual
+      if(closeVol > 0 && currentVolume - closeVol >= minVol && closeVol < currentVolume)
+      {
+         // Usar CTrade para cerrar parcial
+         if(trade.PositionClosePartial(ticket, closeVol))
+         {
+            Print(">> Pos ", ticket, ": Parcial 1 (", partialClose1_Percent, "%) cerrado en ~", TP1_R, "R. Vol Cerrado: ", closeVol);
+            partialClosedFlags[indexFlag] = 1; // Avanzar al siguiente estado
+            stage = 1; // Actualizar estado localmente
+
+            // Mover SL a BE + Buffer (opcional) después de re-seleccionar
+             if(PositionSelectByTicket(ticket)){ // Re-seleccionar por si acaso
+                 double currentSL = PositionGetDouble(POSITION_SL); // SL actual (podría haber cambiado)
+                 double currentTP = PositionGetDouble(POSITION_TP);
+                 double bufferPipsBE = 1.0; // Pips de buffer para BE
+                 double pipsFactor = (digits%2==1?10:1);
+                 double beBufferPoints = bufferPipsBE * point * pipsFactor;
+                 if(beBufferPoints <= 0) beBufferPoints = bufferPipsBE * 0.0001; // Fallback
+                 double beLevel = entryPrice + (type == POSITION_TYPE_BUY ? beBufferPoints : -beBufferPoints);
+                 beLevel = NormalizeDouble(beLevel, digits);
+
+                 if((type == POSITION_TYPE_BUY && beLevel > currentSL) || (type == POSITION_TYPE_SELL && beLevel < currentSL))
+                 {
+                     if(trade.PositionModify(ticket, beLevel, currentTP))
+                         Print(">> Pos ", ticket, ": SL movido a BE + buffer (", beLevel, ") tras Parcial 1");
+                     else Print("Error moviendo SL a BE Pos ", ticket, " tras Parcial 1: ", GetLastError());
+                 }
+            }
+         } else { Print("Error cierre parcial 1 Pos ", ticket, ": ", GetLastError()); }
+      } else if (closeVol >= currentVolume - minVol) {
+          // Si el volumen a cerrar dejaría menos del mínimo, no cerrar parcial
+          // Print("Volumen parcial 1 (", closeVol,") demasiado grande para cerrar en Pos ", ticket, ". Volumen actual: ", currentVolume);
+      }
+   }
+
+   // --- Parcial en 3R (stage 1 -> 2) ---
+   // Re-seleccionar la posición porque el cierre parcial anterior puede haber cambiado datos
+   if(!PositionSelectByTicket(ticket)) return;
+   currentVolume = PositionGetDouble(POSITION_VOLUME); // Obtener volumen actualizado
+   currentPrice = PositionGetDouble(POSITION_PRICE_CURRENT); // Actualizar precio
+   stopLoss = PositionGetDouble(POSITION_SL); // Actualizar SL
+   fixedTakeProfit = PositionGetDouble(POSITION_TP); // Actualizar TP
+
+   // Recalcular R actual con datos frescos
+   if(type == POSITION_TYPE_BUY) currentProfitOrLoss = currentPrice - entryPrice;
+   else currentProfitOrLoss = entryPrice - currentPrice;
+   currentR = (currentProfitOrLoss > 0 && initialRisk > 0) ? (currentProfitOrLoss / initialRisk) : 0;
+
+
+   if(stage == 1 && currentR >= TP2_R)
+   {
+      double closeVol = initialVolume * (partialClose2_Percent / 100.0); // Basado en inicial
+      // Ajustar al step y mínimo volumen
+      closeVol = MathRound(closeVol / volStep) * volStep;
+      closeVol = MathMax(minVol, closeVol);
+      closeVol = NormalizeDouble(closeVol, 2);
+
+      // Asegurar que queda volumen mínimo después de cerrar Y que closeVol es menor que el actual
+      if(closeVol > 0 && currentVolume - closeVol >= minVol && closeVol < currentVolume)
+      {
+          if(trade.PositionClosePartial(ticket, closeVol))
+          {
+              Print(">> Pos ", ticket, ": Parcial 2 (", partialClose2_Percent, "%) cerrado en ~", TP2_R, "R. Vol Cerrado: ", closeVol);
+              partialClosedFlags[indexFlag] = 2; // Avanzar al estado final (trailing)
+              stage = 2; // Actualizar estado localmente
+               Print(">> Pos ", ticket, ": Trailing Adaptativo Activado.");
+          } else { Print("Error cierre parcial 2 Pos ", ticket, ": ", GetLastError()); }
+      } else if (closeVol >= currentVolume - minVol) {
+         // Print("Volumen parcial 2 (", closeVol,") demasiado grande para cerrar en Pos ", ticket, ". Volumen actual: ", currentVolume);
+      }
+   }
+
+   // --- Activar Trailing Adaptativo (stage 2) ---
+   // La lógica de trailing se llama desde ManageRisk si stage es >= 2
+}
+
+// Trailing Adaptativo Avanzado (Llamado desde ManageRisk si stage >= 2)
+void AdvancedAdaptiveTrailing(ulong ticket, double fixedTakeProfit)
+{
+   if(!PositionSelectByTicket(ticket)) return;
+
+   double currentSL = PositionGetDouble(POSITION_SL);
+   // No hacer trailing si no hay SL o si ya está en BE o mejor? Decisión de diseño.
+   // if(currentSL == 0) return;
+
+   double currentPrice = PositionGetDouble(POSITION_PRICE_CURRENT);
+   long type = PositionGetInteger(POSITION_TYPE);
+   int digits = (int)SymbolInfoInteger(Symbol(), SYMBOL_DIGITS);
+   double point = SymbolInfoDouble(Symbol(), SYMBOL_POINT);
+
+   // --- Lógica de Trailing ---
+   // 1. Base ATR M15
+   double atrM15 = ComputeATR(PERIOD_M15, 14);
+   if(atrM15 <= 0) return;
+   double atrFactor = 1.8; // Factor ATR (más conservador que el fractal)
+   double atrBuffer = atrM15 * atrFactor;
+
+   // 2. Ajuste por Estructura M15
+   MarketStructureState currentM15Structure = m15Structure; // Usar global
+   double structureFactor = 1.0;
+   if((type == POSITION_TYPE_BUY && currentM15Structure == MSS_BEARISH) || (type == POSITION_TYPE_SELL && currentM15Structure == MSS_BULLISH)) structureFactor = 0.8; // Ajustar más si va contra M15
+   else if ((type == POSITION_TYPE_BUY && currentM15Structure == MSS_BULLISH) || (type == POSITION_TYPE_SELL && currentM15Structure == MSS_BEARISH)) structureFactor = 1.1; // Más holgado si va a favor
+
+   // 3. Ajuste por Volatilidad (Régimen)
+    double volatilityFactor = AdaptiveVolatility(0); // Usa global g_regime
+
+   // Calcular SL deseado
+   double trailingDistance = atrBuffer * structureFactor * volatilityFactor;
+   double desiredSL = 0;
+
+   if(type == POSITION_TYPE_BUY) desiredSL = currentPrice - trailingDistance;
+   else desiredSL = currentPrice + trailingDistance;
+   desiredSL = NormalizeDouble(desiredSL, digits);
+
+   // 4. Protección Anti-Stop Hunt (Opcional, podría ser redundante con ManageSLWithStopRunProtection)
+   // ...
+
+   // Modificar SL solo si es mejor que el actual Y si hay un SL definido
+   if(currentSL != 0 && ((type == POSITION_TYPE_BUY && desiredSL > currentSL) || (type == POSITION_TYPE_SELL && desiredSL < currentSL)))
+   {
+       // Asegurar distancia mínima al precio
+       double price_away = (type == POSITION_TYPE_BUY) ? (currentPrice - desiredSL) : (desiredSL - currentPrice);
+       double pipsFactor = (digits%2==1?10:1);
+       double min_distance_points = 5 * point * pipsFactor; // 5 pips min
+       if(min_distance_points <= 0) min_distance_points = 5 * 0.0001; // Fallback
+
+       if(price_away >= min_distance_points)
+       {
+           if(trade.PositionModify(ticket, desiredSL, fixedTakeProfit))
+              Print(">> Pos ", ticket, ": Advanced Trailing SL updated to ", desiredSL);
+           else Print("Error Adv Trailing Pos ", ticket, ": ", GetLastError());
+       }
+   }
+}
+
+// Función para Trailing Stop basado en Fractales post-entrada
+void ApplyStopHuntFractalTrailing(ulong ticket, int fractalDepthInput, double bufferPips, int searchBarsAfterEntry)
+{
+    if (!UseFractalStopHuntTrailing) return;
+    if (!PositionSelectByTicket(ticket)) return;
+
+    long position_type = PositionGetInteger(POSITION_TYPE);
+    // *** CORRECCIÓN: Cast a datetime ***
+    datetime open_time = (datetime)PositionGetInteger(POSITION_TIME);
+    double current_sl = PositionGetDouble(POSITION_SL);
+    double current_tp = PositionGetDouble(POSITION_TP); // Necesitamos TP para modificar
+    if(current_sl == 0.0) return; // No aplicar si no hay SL inicial
+
+    // Determinar barras y profundidad real del fractal (input es # de barras a cada lado)
+    int depth = fractalDepthInput;
+    if (depth <= 0) depth = 2; // Mínimo 2 (fractal 5 barras)
+
+    int digits = (int)SymbolInfoInteger(Symbol(), SYMBOL_DIGITS);
+    double point = SymbolInfoDouble(Symbol(), SYMBOL_POINT);
+    double pipsFactor = (digits%2==1?10:1);
+    double bufferPoints = bufferPips * point * pipsFactor;
+    if(bufferPoints <= 0) bufferPoints = bufferPips * 0.0001; // Fallback
+
+
+    int totalBarsM15 = iBars(Symbol(), PERIOD_M15);
+    int current_bar_idx = totalBarsM15 - 1; // Última vela M15 cerrada
+    int open_bar_idx = iBarShift(Symbol(), PERIOD_M15, open_time, false);
+    if(open_bar_idx < 0 || open_bar_idx >= totalBarsM15 ) return; // Error o barra fuera de rango
+
+    // Definir rango de búsqueda
+    int start_search_idx = MathMax(open_bar_idx, current_bar_idx - searchBarsAfterEntry);
+    int end_search_idx = current_bar_idx - depth; // Última barra donde puede terminar un fractal
+
+    double fractal_price = 0;
+    int fractal_bar_idx = -1;
+
+    // Buscar el fractal MÁS RECIENTE válido después de la apertura
+    for (int i = end_search_idx; i >= start_search_idx; i--)
+    {
+        if (i < depth || i >= totalBarsM15 - depth) continue; // Asegurar espacio para fractal
+
+        bool is_fractal = true;
+        double level = 0;
+
+        if (position_type == POSITION_TYPE_BUY) // Buscamos fractal LOW
+        {
+            level = iLow(Symbol(), PERIOD_M15, i);
+            for (int j = 1; j <= depth; j++)
+            {
+                if (iLow(Symbol(), PERIOD_M15, i + j) < level || iLow(Symbol(), PERIOD_M15, i - j) < level)
+                { is_fractal = false; break; }
+            }
+        }
+        else // Buscamos fractal HIGH
+        {
+            level = iHigh(Symbol(), PERIOD_M15, i);
+            for (int j = 1; j <= depth; j++)
+            {
+                if (iHigh(Symbol(), PERIOD_M15, i + j) > level || iHigh(Symbol(), PERIOD_M15, i - j) > level)
+                { is_fractal = false; break; }
+            }
+        }
+
+        if (is_fractal)
+        {
+             // Verificar que el fractal ocurrió en o después de la barra de apertura
+             // -> Ya estamos buscando desde start_search_idx que es >= open_bar_idx
+            fractal_price = level;
+            fractal_bar_idx = i;
+            break; // Encontramos el más reciente, salir
+        }
+    } // Fin loop búsqueda fractal
+
+    if (fractal_bar_idx != -1) // Si se encontró un fractal válido
+    {
+        double new_sl = 0;
+        if (position_type == POSITION_TYPE_BUY) new_sl = fractal_price - bufferPoints;
+        else new_sl = fractal_price + bufferPoints;
+        new_sl = NormalizeDouble(new_sl, digits);
+
+        // Modificar solo si el nuevo SL basado en fractal es MEJOR que el SL actual
+        bool should_modify = false;
+        if (position_type == POSITION_TYPE_BUY && new_sl > current_sl) should_modify = true;
+        else if (position_type == POSITION_TYPE_SELL && new_sl < current_sl) should_modify = true;
+
+        if (should_modify)
+        {
+            // Checkear distancia mínima al precio actual
+             double currentPrice = (position_type == POSITION_TYPE_BUY) ? SymbolInfoDouble(Symbol(), SYMBOL_BID) : SymbolInfoDouble(Symbol(), SYMBOL_ASK);
+             double price_away = MathAbs(currentPrice - new_sl);
+             double min_distance_pips = (BufferPips > 0 ? BufferPips : 5); // Usar BufferPips global si es > 0, sino 5 pips
+             double min_distance_points = min_distance_pips * point * pipsFactor;
+              if(min_distance_points <= 0) min_distance_points = min_distance_pips * 0.0001; // Fallback
+
+             if (price_away >= min_distance_points)
+             {
+                 if (trade.PositionModify(ticket, new_sl, current_tp)) // Usar current_tp
+                 { Print("Pos ", ticket, " SL movido a ", new_sl, " (Fractal M15 Barra ", fractal_bar_idx, ")"); }
+                 else { Print("Error modificando SL fractal pos ", ticket, ": ", GetLastError()); }
+             }
+            // else { Print("SL Fractal ", new_sl, " demasiado cerca del precio ", currentPrice, ". No modificado."); } // Debug
+        }
+    }
+}
+
+
+//+------------------------------------------------------------------+
+//| Funciones de Eventos Principales                                 |
+//+------------------------------------------------------------------+
+int OnInit()
+{
+   Print("+------------------------------------------------------------------+");
+   Print("| EA Liquidity 7.0 VOLATILIDAD inicializado.                       |");
+   Print("| Versión con Liquidez Precisa (EQH/EQL, Old, Session)             |");
+   Print("| *** CÓDIGO CORREGIDO *** |");
+   Print("+------------------------------------------------------------------+");
+   Print("Magic Number: 12345 (¡CAMBIAR SI ES NECESARIO!)"); // Recordatorio importante
+   Print("Parciales Avanzados: ", UsePartialClose ? "Activado" : "Desactivado");
+   Print("Trailing Fractal: ", UseFractalStopHuntTrailing ? "Activado" : "Desactivado");
+   Print("Trailing Estándar: ", UseTrailingStop ? "Activado" : "Desactivado");
+
+   // Inicializar variables dinámicas a partir de inputs
+   dyn_ATRMultiplierForMinPenetration = ATRMultiplierForMinPenetration;
+   dyn_ATRMultiplierForMaxPenetration = ATRMultiplierForMaxPenetration;
+   dyn_BreakEvenPips                  = BreakEvenPips;
+   dyn_TrailingDistancePips           = TrailingDistancePips;
+
+   // Reiniciar flags de parciales, contador diario y almacenamiento de volúmenes
+   ArrayInitialize(partialClosedFlags, 0);
+   ArrayResize(g_positionTickets,0); // Limpiar arrays de volumen inicial
+   ArrayResize(g_initialVolumes,0);
+   tradesToday = 0;
+   lastH4TradeTime = 0;
+
+   // Inicializar valores de Sesiones y Old H/L
+    UpdateOldHighsLows();
+    // UpdateSessionHighsLows(); // La lógica de sesiones necesita ser más robusta
+
+   return(INIT_SUCCEEDED);
+}
+
+void OnDeinit(const int reason)
+{
+   Print("EA Liquidity 7.0 VOLATILIDAD detenido. Razón: ", reason);
+   // Limpiar objetos gráficos si se usan
+   // Limpiar arrays globales si es necesario
+   ArrayResize(g_positionTickets,0);
+   ArrayResize(g_initialVolumes,0);
+}
+
+// Variable global para controlar la frecuencia de actualizaciones intensivas
+datetime lastUpdateTime = 0;
+int updateFrequencySeconds = 15; // Actualizar detecciones cada 15 segundos (ajustable)
+
+void OnTick()
+{
+   // --- Control de Frecuencia ---
+   datetime currentTime = TimeCurrent();
+   if (currentTime < lastUpdateTime + updateFrequencySeconds)
+   {
+       // Gestionar solo SL/TP rápidos si es necesario, pero no re-calcular todo
+        if(PositionsTotal() > 0) {
+            // Llamadas rápidas que no dependan de detecciones pesadas
+            // ManageRisk(); // Podría llamarse aquí para BE/Trailing rápidos, pero cuidado con recálculos innecesarios
+        }
+       return;
+   }
+   lastUpdateTime = currentTime; // Actualizar tiempo de la última ejecución completa
+
+
+   // --- Reset Diario ---
+   static datetime lastTradeDay = 0;
+   MqlDateTime dtCurrent, dtLast;
+   TimeToStruct(currentTime, dtCurrent);
+   TimeToStruct(lastTradeDay, dtLast);
+   if(dtCurrent.day != dtLast.day || lastTradeDay == 0)
+   {
+      tradesToday = 0;
+      ArrayInitialize(partialClosedFlags, 0);
+      // Limpiar almacenamiento de volúmenes al inicio del día? O mantenerlos si hay trades overnight?
+      // Por seguridad, limpiamos:
+       ArrayResize(g_positionTickets,0);
+       ArrayResize(g_initialVolumes,0);
+
+      lastTradeDay = currentTime;
+      UpdateOldHighsLows();
+      // Resetear sesiones (la lógica de cálculo necesita mejora)
+      AsiaHigh = 0; AsiaLow = 0; AsiaStartTime = 0; LondonHigh = 0; LondonLow = 0; LondonStartTime = 0; NYHigh = 0; NYLow = 0; NYStartTime = 0;
+      Print("--- Nuevo día (", TimeToString(currentTime, TIME_DATE), ") --- Trades:", tradesToday);
+   }
+
+   // --- Filtro por Sesiones ---
+   if(FilterBySessions)
+   {
+      int currentHour = dtCurrent.hour;
+      // Lógica de sesión necesita revisión para cruce de medianoche
+      bool inAsia   = false; // Lógica placeholder
+       if(AsiaOpen > AsiaClose) inAsia = (currentHour >= AsiaOpen || currentHour < AsiaClose); // Cruza medianoche
+       else inAsia = (currentHour >= AsiaOpen && currentHour < AsiaClose); // Mismo día
+
+      bool inLondon = (currentHour >= LondonOpen && currentHour < LondonClose);
+      bool inNY     = (currentHour >= NYOpen && currentHour < NYClose);
+
+      // Operar solo en Londres y NY? Ajustar según preferencia
+      if (!inLondon && !inNY /*&& !inAsia*/) { return; }
+   }
+
+   // --- Actualizar Bias (H4 y D1) ---
+   if(UseDailyBias)
+   {
+      ComputeH4Bias(); // Actualiza g_H4BiasBullish
+      ComputeD1Bias(); // Actualiza g_D1BiasBullish
+   }
+
+   // --- Actualizar Régimen de Volatilidad y Parámetros Dinámicos ---
+   double volatilityIndex = CalculateDynamicVolatilityIndex(14, 20, 10); // M5 based
+   // *** CALIBRAR ESTOS UMBRALES ***
+   MarketRegime currentRegime = DetermineMarketRegime(volatilityIndex, 0.0003, 0.0001); // EJEMPLO - ¡NECESITA AJUSTE REAL!
+   if(currentRegime != g_regime)
+   {
+      AdjustParametersBasedOnVolatility(currentRegime);
+      g_regime = currentRegime;
+      Print("Nuevo Régimen Volatilidad: ", EnumToString(g_regime), " (Index: ", volatilityIndex, ")");
+   }
+
+   // --- Detectar Estructura M15 ---
+   m15Structure = DetectMarketStructureM15(FractalLookback_M15, 2);
+
+   // --- Detectar Elementos ICT (Liquidez, FVG, OB, BB) ---
+   DetectLiquidity();
+   DetectFairValueGaps();
+   DetectOrderBlocks();
+   DetectBreakerBlocks();
+   // DetectJudasSwing();
+
+   // --- Gestión de Posiciones Abiertas ---
+   if(PositionsTotal() > 0)
+   {
+      ManageRisk(); // Llama a BE, Parciales, Trailings
+      ManageSLWithStopRunProtection(); // Protección defensiva SL
+      return; // No buscar nuevas entradas si hay posiciones
+   }
+
+   // --- Buscar Nuevas Entradas ---
+   // Control para no operar demasiado seguido (ej: solo una vez por vela H4 si hay trades hoy)
+   datetime currentH4Time = iTime(Symbol(), PERIOD_H4, 0);
+   if(lastH4TradeTime == currentH4Time && tradesToday > 0) {
+       // Print("Ya se operó/revisó en esta vela H4."); // Debug
+       return;
+   }
+
+   // Prioridad 1: Entradas de Caza de Liquidez (Stop Hunts)
+   CheckLiquidityHunting();
+   if(PositionsTotal() > 0 || tradesToday >= MaxTradesPerDay) return; // Salir si se abrió trade o límite alcanzado
+
+   // Prioridad 2: Entradas en POIs (OBs / Breakers) con confirmación
+   CheckTradeEntries();
+   // No necesitamos retornar aquí, OnTick termina.
+
+}
+//+------------------------------------------------------------------+
+
+
+// Helper para AssessOBQuality (Placeholder - requiere lógica real)
+bool CheckHTFConfluence(OrderBlock &ob) { return false; }
+bool IsPremiumPosition(OrderBlock &ob) { return false; }
+double ComputeATRSlope(int period){ return 0.0;}
+
+
+// Evaluar Calidad de Order Block
+double AssessOBQuality(OrderBlock &ob)
+{
+    double quality = 5.0; // Base score
+    double point = SymbolInfoDouble(Symbol(), SYMBOL_POINT);
+    double atrM5 = ComputeATR(PERIOD_M5, 14);
+    if(atrM5 <= point) atrM5 = point * 100; // Fallback si ATR es muy pequeño
+
+    // 1. Tamaño Relativo al ATR
+    double obRange = ob.highPrice - ob.lowPrice;
+    ob.relativeSize = (atrM5 > 0) ? obRange / atrM5 : 1.0;
+    if(ob.relativeSize > 1.5) quality += 1.5; // Buen tamaño
+    else if (ob.relativeSize < 0.8) quality -= 1.0; // Pequeño
+
+    // 2. Mechas (Wicks)
+    double bodySize = MathAbs(ob.closePrice - ob.openPrice);
+    if (bodySize > point) // Evitar división por cero o cuerpos muy pequeños
+    {
+        double upperWick = ob.highPrice - MathMax(ob.openPrice, ob.closePrice);
+        double lowerWick = MathMin(ob.openPrice, ob.closePrice) - ob.lowPrice;
+        // OB Alcista -> Vela original BAJISTA. Interesa mecha INFERIOR grande (indica compra antes de subir)
+        if(ob.isBullish && lowerWick > bodySize * 1.0) quality += 1.0;
+        // OB Bajista -> Vela original ALCISTA. Interesa mecha SUPERIOR grande (indica venta antes de bajar)
+        if(!ob.isBullish && upperWick > bodySize * 1.0) quality += 1.0;
+    }
+
+    // 3. Confluencia HTF (Placeholder)
+    ob.hasHTFConfluence = CheckHTFConfluence(ob);
+    if(ob.hasHTFConfluence) quality += 1.5;
+
+    // 4. Zona Premium/Discount (Placeholder)
+    ob.isPremium = IsPremiumPosition(ob);
+    if((ob.isBullish && !ob.isPremium) || (!ob.isBullish && ob.isPremium)) quality += 1.0; // Mejor si está en descuento (Bullish) o premium (Bearish)
+
+    // 5. Volumen del OB vs Promedio
+    int obBarIndexM5 = iBarShift(Symbol(), PERIOD_M5, ob.time, false);
+    if(obBarIndexM5 >= 0)
+    {
+        long obVolume = iTickVolume(Symbol(), PERIOD_M5, obBarIndexM5);
+        double avgVolume = 0;
+        long volSum = 0;
+        int volBars = 0;
+        int barsM5 = iBars(Symbol(), PERIOD_M5);
+        for(int i = obBarIndexM5 + 1; i <= MathMin(barsM5-1, obBarIndexM5 + 10); i++){
+           volSum += iTickVolume(Symbol(), PERIOD_M5, i);
+           volBars++;
+        }
+        if(volBars > 0) avgVolume = (double)volSum / volBars;
+
+        if(avgVolume > 0 && obVolume > avgVolume * 1.3) quality += 1.0; // Volumen del OB por encima del promedio
+
+        // 6. Volumen Post-OB (desplazamiento)
+        double displacementVolumeAvg = 0;
+        long displacementVolSum = 0;
+        volBars = 0;
+        for(int i = obBarIndexM5 - 1; i >= MathMax(0, obBarIndexM5 - 3); i--) { // Mirar 3 barras después
+           displacementVolSum += iTickVolume(Symbol(), PERIOD_M5, i);
+           volBars++;
+        }
+        if(volBars > 0) displacementVolumeAvg = (double)displacementVolSum / volBars;
+
+        if(avgVolume > 0 && displacementVolumeAvg > avgVolume * 1.2) quality += 1.5; // Volumen fuerte en el desplazamiento
+    }
+
+
+    // 7. ¿Cerca de FVG? (Mejora si el OB creó o está cerca de un FVG alineado)
+    // ... (Lógica FVG check) ...
+
+
+    return MathMax(1.0, MathMin(10.0, quality)); // Limitar calidad entre 1 y 10
+}
+
+// Chequear si un OB ha sido barrido (mitigado)
+bool IsOBSwept(OrderBlock &ob)
+{
+   int obIndex = iBarShift(Symbol(), PERIOD_M5, ob.time, false);
+   if(obIndex < 0) return false; // No se encontró la barra
+
+   // Buscar desde la vela siguiente al OB hasta la actual
+   for(int i = obIndex - 1; i >= 0; i--)
+   {
+      if(ob.isBullish) // OB Alcista (vela original bajista) - Buscar si Low fue barrido
+      {
+          // Considerar mitigación si toca el 50% o el Low
+          // double obMidPoint = (ob.openPrice + ob.closePrice) / 2.0; // 50% cuerpo
+          // if(iLow(Symbol(), PERIOD_M5, i) <= obMidPoint) return true;
+         if(iLow(Symbol(), PERIOD_M5, i) <= ob.lowPrice) return true; // Barrido completo del Low
+      }
+      else // OB Bajista (vela original alcista) - Buscar si High fue barrido
+      {
+          // double obMidPoint = (ob.openPrice + ob.closePrice) / 2.0;
+          // if(iHigh(Symbol(), PERIOD_M5, i) >= obMidPoint) return true;
+         if(iHigh(Symbol(), PERIOD_M5, i) >= ob.highPrice) return true; // Barrido completo del High
+      }
+   }
+   return false; // No barrido
+}
+
+// Ordenar Order Blocks por Calidad (Descendente)
+void SortOrderBlocksByQuality()
+{
+   int size = ArraySize(orderBlocks);
+   if(size <= 1) return;
+
+   // Bubble Sort simple
+   for(int i = 0; i < size - 1; i++)
+   {
+      for(int j = 0; j < size - i - 1; j++)
+      {
+         if(orderBlocks[j].quality < orderBlocks[j + 1].quality)
+         {
+            OrderBlock temp = orderBlocks[j];
+            orderBlocks[j] = orderBlocks[j + 1];
+            orderBlocks[j + 1] = temp;
+         }
+      }
+   }
+}
+
+// Placeholder para IsSignalRefined
+bool IsSignalRefined(bool isBullish)
+{
+    // Añadir lógica para evaluar calidad de vela de señal si es necesario
+    return true; // Por defecto, no filtrar
+}
+
+// Placeholders adicionales para funciones no implementadas completamente
+double CalculateMarketStructureScore(int lookbackBars) { return 50.0; }
+double CalculateLiquidityZoneWeight(const LiquidityZone &lz) { return lz.strength; }
+bool IsLiquidityZoneStrong(const LiquidityZone &lz) { return lz.strength >= 8.0; }
+double CalculateH1MarketScore(int lookbackBars) { return 50.0; }
+bool IsMultiTFConfirmation(MarketStructureState m15State, MarketStructureState h1State) { return true; }
+double CalculateStructureWeight(MarketStructureState state, double score) { return score; }
+bool IsSignalQualityAcceptable(double m15Score, double h1Score) { return true; }
+
+//+------------------------------------------------------------------+
