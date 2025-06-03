@@ -9,6 +9,10 @@
 #include <Trade\Trade.mqh>
 CTrade trade;
 
+// Control de frecuencia para OnTick
+datetime lastUpdateTime = 0;
+int updateFrequencySeconds = 15; // Actualizar análisis principales cada X segundos
+
 //+------------------------------------------------------------------+
 //| Estructuras y variables globales y enumerados adicionales         |
 //+------------------------------------------------------------------+
@@ -809,10 +813,10 @@ void CheckLiquidityHunting()
 {
     if(PositionsTotal() > 0 || tradesToday >= MaxTradesPerDay) return;
 
-    for(int i_lz=0; i_lz < ArraySize(liquidityZones)-1; i_lz++){
-       for(int j_lz=0; j_lz < ArraySize(liquidityZones)-1-i_lz; j_lz++){
+    for(int i_lz=0; i_lz < ArraySize(liquidityZones)-1; i_lz++){ // Corrected loop variable
+       for(int j_lz=0; j_lz < ArraySize(liquidityZones)-1-i_lz; j_lz++){ // Corrected loop variable
           if(liquidityZones[j_lz].strength < liquidityZones[j_lz+1].strength){
-             LiquidityZone tempZone = liquidityZones[j_lz];
+             LiquidityZone tempZone = liquidityZones[j_lz]; // Corrected temp variable
              liquidityZones[j_lz] = liquidityZones[j_lz+1];
              liquidityZones[j_lz+1] = tempZone;
           }
@@ -928,13 +932,14 @@ void CheckLiquidityHunting()
 //+------------------------------------------------------------------+
 void OnTick()
 {
-   datetime currentTime = TimeCurrent();
+   datetime currentTime = TimeCurrent(); // Moved to top of function
    if (currentTime < lastUpdateTime + updateFrequencySeconds)
    {
-       if(PositionsTotal() > 0) { /* ManageRisk(); ManageSLWithStopRunProtection(); */ } // Quick management if needed
+       // Only quick management if needed, e.g., fast trailing stop, but not full recalculation
+       // if(PositionsTotal() > 0) { ManageRisk(); } // Potentially very light version of ManageRisk
        return;
    }
-   lastUpdateTime = currentTime;
+   lastUpdateTime = currentTime; // Update time of the last full execution
    g_TradeOpenedByLiquidityHuntThisTick = false; // Reset flag at start of full tick processing
 
    static datetime lastTradeDay = 0;
@@ -945,11 +950,14 @@ void OnTick()
    {
       tradesToday = 0;
       ArrayInitialize(partialClosedFlags, 0);
-      ArrayResize(g_positionTickets,0);
-      ArrayResize(g_initialVolumes,0);
+      ArrayResize(g_positionTickets,0); // Clear stored tickets for new day
+      ArrayResize(g_initialVolumes,0);  // Clear stored volumes
       lastTradeDay = currentTime;
       UpdateOldHighsLows();
-      AsiaHigh = 0; AsiaLow = 0; AsiaStartTime = 0; LondonHigh = 0; LondonLow = 0; LondonStartTime = 0; NYHigh = 0; NYLow = 0; NYStartTime = 0;
+      // UpdateSessionHighsLows(); // Already called in DetectLiquidity
+      AsiaHigh = 0; AsiaLow = 0; AsiaStartTime = 0;
+      LondonHigh = 0; LondonLow = 0; LondonStartTime = 0;
+      NYHigh = 0; NYLow = 0; NYStartTime = 0;
       Print("--- Nuevo día (", TimeToString(currentTime, TIME_DATE), ") --- Trades:", tradesToday);
    }
 
@@ -961,7 +969,14 @@ void OnTick()
        else inAsia = (currentHour >= AsiaOpen && currentHour < AsiaClose);
       bool inLondon = (currentHour >= LondonOpen && currentHour < LondonClose);
       bool inNY     = (currentHour >= NYOpen && currentHour < NYClose);
-      if (!inLondon && !inNY && !inAsia) { return; } // Allow Asia if specified, otherwise default to Lon/NY
+
+      bool isActiveSession = false;
+      if(StringFind( торговая стратегия, "Asia")>=0 && inAsia) isActiveSession = true;
+      if(StringFind( торговая стратегия, "London")>=0 && inLondon) isActiveSession = true;
+      if(StringFind( торговая стратегия, "NY")>=0 && inNY) isActiveSession = true;
+      if( торговая стратегия == "" && (inLondon || inNY)) isActiveSession = true; // Default to Lon/NY if no specific session string
+
+      if (!isActiveSession) { return; }
    }
 
    if(UseDailyBias)
@@ -971,23 +986,23 @@ void OnTick()
    }
 
    double volatilityIndex = CalculateDynamicVolatilityIndex(14, 20, 10);
-   MarketRegime currentRegime = DetermineMarketRegime(volatilityIndex, 0.0003, 0.0001);
+   MarketRegime currentRegime = DetermineMarketRegime(volatilityIndex, 0.0003, 0.0001); // Example thresholds
    if(currentRegime != g_regime)
    {
       AdjustParametersBasedOnVolatility(currentRegime);
       g_regime = currentRegime;
       Print("Nuevo Régimen Volatilidad: ", EnumToString(g_regime), " (Index: ", volatilityIndex, ")");
    }
-    UpdateDynamicRiskRewardRatios();
-    m15Structure = DetectMarketStructureM15(FractalLookback_M15, 2);
+   UpdateDynamicRiskRewardRatios();
+   m15Structure = DetectMarketStructureM15(FractalLookback_M15, 2);
 
    // --- SINGLE BLOCK for ICT Detections & Draw on Liquidity ---
-   DetectLiquidity();
+   DetectLiquidity(); // This calls UpdateOldHighsLows and UpdateSessionHighsLows
    DetectFairValueGaps();
-   DetectOrderBlocks();
+   DetectOrderBlocks();   // This now calls AssessDisplacementQuality
    DetectBreakerBlocks();
    // DetectJudasSwing();
-   GetCurrentDrawOnLiquidity();
+   GetCurrentDrawOnLiquidity(); // This sets g_hasValidDrawOnLiquidity etc.
 
    // --- Trade Management ---
    if(PositionsTotal() > 0)
@@ -999,17 +1014,17 @@ void OnTick()
 
    // --- New Trade Entries ---
    datetime currentH4Time = iTime(Symbol(), PERIOD_H4, 0);
-   if(lastH4TradeTime == currentH4Time && tradesToday > 0 && MaxTradesPerDay > 0) { // Added MaxTradesPerDay > 0 condition
+   if(MaxTradesPerDay > 0 && lastH4TradeTime == currentH4Time && tradesToday > 0 ) { // Check MaxTradesPerDay to allow unlimited if 0
+       // Print("Ya se operó/revisó en esta vela H4 y MaxTradesPerDay > 0.");
        return;
    }
 
    // Priority 1: Liquidity Hunting
    CheckLiquidityHunting();
 
-   if(g_TradeOpenedByLiquidityHuntThisTick || tradesToday >= MaxTradesPerDay) return;
+   if(g_TradeOpenedByLiquidityHuntThisTick || (MaxTradesPerDay > 0 && tradesToday >= MaxTradesPerDay) ) return;
 
    // Priority 2: POI Entries (OB/BB)
-   // This is only reached if CheckLiquidityHunting didn't open a trade and limits are not met.
    CheckTradeEntries();
 }
 
